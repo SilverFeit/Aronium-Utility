@@ -198,6 +198,11 @@ func CreateSyntheticPosDB(destPath string) error {
 		UserId INTEGER DEFAULT 1,
 		DateCreated DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_barcode_product ON Barcode(ProductId);
+	CREATE INDEX IF NOT EXISTS idx_stock_product ON Stock(ProductId);
+	CREATE INDEX IF NOT EXISTS idx_docitem_doc ON DocumentItem(DocumentId);
+	CREATE INDEX IF NOT EXISTS idx_payment_doc ON Payment(DocumentId);
 	`
 	if _, err := conn.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("create synthetic schema failed: %w", err)

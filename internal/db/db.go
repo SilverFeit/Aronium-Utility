@@ -606,9 +606,11 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 	return WithRetry(5, func() ([]Product, error) {
 		hasBarcode := tableExists(posDB, "Barcode")
-		barcodeSubquery := "''"
+		barcodeSelect := "''"
+		barcodeJoin := ""
 		if hasBarcode {
-			barcodeSubquery = "(SELECT COALESCE(b.Value, '') FROM Barcode b WHERE b.ProductId = p.Id LIMIT 1)"
+			barcodeSelect = "COALESCE(bc.FirstBarcode, '')"
+			barcodeJoin = "LEFT JOIN (SELECT ProductId, MIN(Value) AS FirstBarcode FROM Barcode GROUP BY ProductId) bc ON bc.ProductId = p.Id"
 		}
 
 		query := fmt.Sprintf(`
@@ -618,7 +620,7 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 				COALESCE(pg.Name, 'General'),
 				COALESCE(p.Name, ''),
 				COALESCE(p.Code, ''),
-				COALESCE(%s, ''),
+				%s,
 				COALESCE(p.PLU, 0),
 				COALESCE(p.MeasurementUnit, 'UND'),
 				COALESCE(p.Price, 0),
@@ -626,11 +628,13 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 				COALESCE(p.Markup, 0),
 				COALESCE(p.IsService, 0),
 				COALESCE(p.IsEnabled, 1),
-				COALESCE((SELECT SUM(s.Quantity) FROM Stock s WHERE s.ProductId = p.Id), 0)
+				COALESCE(st.TotalQty, 0)
 			FROM Product p
 			LEFT JOIN ProductGroup pg ON pg.Id = p.ProductGroupId
+			LEFT JOIN (SELECT ProductId, SUM(Quantity) AS TotalQty FROM Stock GROUP BY ProductId) st ON st.ProductId = p.Id
+			%s
 			ORDER BY p.Name ASC;
-		`, barcodeSubquery)
+		`, barcodeSelect, barcodeJoin)
 
 		rows, err := posDB.Query(query)
 		if err != nil {
