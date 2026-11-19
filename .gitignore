@@ -1,0 +1,26 @@
+# Build & release output directories
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Local SQLite databases and runtime state
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Secret credentials & local tokens
+*.token.enc
+*.vault.enc
+*.secret.json
+service-account*.json
+.env
+aronium-util.local.yaml
+
+# OS metadata
+.DS_Store
+Thumbs.db

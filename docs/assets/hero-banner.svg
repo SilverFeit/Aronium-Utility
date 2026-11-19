@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="100%">
+  <defs>
+    <linearGradient id="heroBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16"/>
+      <stop offset="55%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="380" rx="20" fill="url(#heroBg)" stroke="#334155" stroke-width="2"/>
+
+  <!-- Left Title & Badges -->
+  <rect x="48" y="38" width="310" height="30" rx="15" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="203" y="58" text-anchor="middle" fill="#6ee7b7" font-family="sans-serif" font-weight="bold" font-size="13">100% GO • WINDOWS x64/x86 • MIT LICENSE</text>
+
+  <text x="48" y="114" fill="#f8fafc" font-family="sans-serif" font-weight="800" font-size="44">Aronium Utility CLI</text>
+  <text x="48" y="152" fill="#38bdf8" font-family="sans-serif" font-weight="600" font-size="20">Sincronizador de Fiados por Cliente, Inventario Vivo, Google Drive Web OAuth, Multi-Caja &amp; DIAN</text>
+
+  <text x="48" y="194" fill="#cbd5e1" font-family="sans-serif" font-size="15">• Lee pos.db en modo estricto solo lectura (mode=ro) sin bloquear la caja registradora de Aronium Lite</text>
+  <text x="48" y="222" fill="#cbd5e1" font-family="sans-serif" font-size="15">• Enruta cada venta a crédito ("Fiado") con nombre de cliente directamente a su cuenta en Google Drive / Sheets</text>
+  <text x="48" y="250" fill="#cbd5e1" font-family="sans-serif" font-size="15">• Incluye Instalador Nativo para Windows (aronium-util-setup.exe) que configura el CLI y variables de entorno</text>
+  <text x="48" y="278" fill="#cbd5e1" font-family="sans-serif" font-size="15">• Respaldos en caliente (AES-256-GCM), Hub Multi-Estación Offline-First y Conector Fiscal DIAN UBL 2.1</text>
+
+  <rect x="48" y="306" width="540" height="42" rx="10" fill="#090d16" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="66" y="332" fill="#7dd3fc" font-family="monospace" font-size="15">&gt; aronium-util drive login  &amp;&amp;  aronium-util watch</text>
+
+  <!-- Right Terminal & Live Table Preview Card -->
+  <rect x="650" y="36" width="504" height="308" rx="14" fill="#0b1120" stroke="#475569" stroke-width="2"/>
+  <circle cx="674" cy="58" r="6" fill="#ef4444"/>
+  <circle cx="694" cy="58" r="6" fill="#f59e0b"/>
+  <circle cx="714" cy="58" r="6" fill="#10b981"/>
+  <text x="900" y="62" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="12">Aronium_Inventario_y_Fiados.xlsx (Google Drive)</text>
+  <line x1="650" y1="76" x2="1154" y2="76" stroke="#334155" stroke-width="1.5"/>
+
+  <text x="670" y="104" fill="#38bdf8" font-family="monospace" font-weight="bold" font-size="13">[CARTERA DE FIADOS POR CLIENTE — SINCRONIZADA EN DRIVE]</text>
+  <text x="670" y="128" fill="#e2e8f0" font-family="monospace" font-size="12">• Don Pedro Pérez       | Fiado: $31.000 | Abono: $21.000 | SALDO: $10.000</text>
+  <text x="670" y="148" fill="#94a3b8" font-family="monospace" font-size="11">  └─ Factura #20-200-002 | 2x Arroz 1kg, 1x Aceite 1L | Nota: "Paga viernes"</text>
+  <text x="670" y="172" fill="#e2e8f0" font-family="monospace" font-size="12">• Doña María Gómez      | Fiado: $50.000 | Abono: $20.000 | SALDO: $30.000</text>
+  <text x="670" y="192" fill="#94a3b8" font-family="monospace" font-size="11">  └─ Factura #20-200-003 | Pago dividido ($20k Efectivo + $30k Fiado)</text>
+
+  <line x1="670" y1="210" x2="1134" y2="210" stroke="#1e293b" stroke-width="1.5"/>
+  <text x="670" y="234" fill="#34d399" font-family="monospace" font-weight="bold" font-size="13">[INVENTARIO VIVO Y ALERTAS DE STOCK]</text>
+  <text x="670" y="258" fill="#e2e8f0" font-family="monospace" font-size="12">• [ARR-001] Arroz Diana 1kg          | Stock: 45 UND | $4.500 | [OK]</text>
+  <text x="670" y="278" fill="#fbbf24" font-family="monospace" font-size="12">• [LEC-003] Leche Alquería 1L        | Stock:  3 UND | $4.200 | [STOCK_BAJO]</text>
+  <text x="670" y="298" fill="#f87171" font-family="monospace" font-size="12">• [CAF-004] Café Sello Rojo 500g     | Stock:  0 UND | $16.500| [AGOTADO]</text>
+  <text x="670" y="324" fill="#6ee7b7" font-family="monospace" font-size="12">[✓] Google Drive OAuth 2.0 Web: ACTIVO | Outbox Offline: 0 pendientes</text>
+</svg>

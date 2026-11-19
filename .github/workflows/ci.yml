@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run Go Vet & Unit / BDD / Concurrency QA Tests
+        run: |
+          go vet ./...
+          go test -v -race ./...
+
+      - name: Cross-Compile Windows x64, Windows x86 & Installer Packages
+        run: ./Scripts/package_release.sh
