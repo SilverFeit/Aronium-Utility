@@ -19,14 +19,16 @@ cleanup_payload() {
 }
 trap cleanup_payload EXIT
 
-echo "[1/6] Building Tauri 2 + Svelte 5 + TypeScript Frontend (ui/)..."
-(
-    cd "${ROOT_DIR}/ui"
-    if [[ ! -d "node_modules" ]]; then
-        npm install --no-audit --no-fund
-    fi
-    npm run build
-)
+echo "[1/6] Preparing Tauri 2 + Svelte 5 + TypeScript Frontend (ui/)..."
+if [[ ! -f "${ROOT_DIR}/ui/dist/index.html" || "${FORCE_UI_REBUILD:-0}" == "1" ]]; then
+    (
+        cd "${ROOT_DIR}/ui"
+        if [[ ! -d "node_modules" ]]; then
+            npm install --no-audit --no-fund
+        fi
+        npm run build
+    )
+fi
 rm -rf "${UI_EMBED_DIST}"
 mkdir -p "${UI_EMBED_DIST}"
 cp -R "${ROOT_DIR}/ui/dist/." "${UI_EMBED_DIST}/"
