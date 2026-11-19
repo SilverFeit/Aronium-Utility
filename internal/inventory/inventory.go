@@ -305,7 +305,7 @@ func (e *Engine) SetProductExpiration(productID int64, productName, batchLot, ex
 // SetPriceListEntry sets a differentiated price (e.g., Mayorista, Minorista, VIP) in stateDB (TODO-051).
 func (e *Engine) SetPriceListEntry(listName string, productID int64, productName string, customPrice float64, currency string) error {
 	if currency == "" {
-		currency = "COP"
+		currency = "USD"
 	}
 	_, err := e.StateDB.Exec(`
 		INSERT INTO price_lists (list_name, product_id, product_name, custom_price, currency, updated_at)
@@ -363,7 +363,7 @@ func (e *Engine) GetPriceList(listName string) ([]PriceListItem, error) {
 			ProductName: p.Name,
 			BasePrice:   p.Price,
 			CustomPrice: price,
-			Currency:    "COP",
+			Currency:    "USD",
 			DualPrice:   dual,
 		})
 	}

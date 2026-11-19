@@ -1,4 +1,4 @@
-package fiados
+package credit
 
 import (
 	"database/sql"
@@ -12,8 +12,8 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
 )
 
-// FiadoTransaction represents a single credit bill or partial abono routed to a customer's account.
-type FiadoTransaction struct {
+// CreditTransaction represents a single credit bill or partial payment routed to a customer's credit account.
+type CreditTransaction struct {
 	DocumentID       int64    `json:"document_id"`
 	DocumentNumber   string   `json:"document_number"`
 	Date             string   `json:"date"`
@@ -31,45 +31,45 @@ type FiadoTransaction struct {
 	CLINotes         []string `json:"cli_notes,omitempty"`
 	CombinedNotes    string   `json:"combined_notes"`
 	OverdueDays      int      `json:"overdue_days"`
-	Status           string   `json:"status"` // "PENDIENTE", "ABONADO_PARCIAL", "PAGADO", "EN_MORA"
+	Status           string   `json:"status"` // "PENDIENTE", "ABONADO_PARCIAL", "PAGADO", "VENCIDO"
 }
 
-// CustomerCreditAccount aggregates all credit transactions, abonos, and notes for a specific customer (TODO-018, TODO-019).
+// CustomerCreditAccount aggregates all credit transactions, payments, and notes for a specific customer (TODO-018, TODO-019).
 type CustomerCreditAccount struct {
-	CustomerID         int64              `json:"customer_id"`
-	CustomerCode       string             `json:"customer_code"`
-	CustomerName       string             `json:"customer_name"`
-	TaxNumber          string             `json:"tax_number"`
-	PhoneNumber        string             `json:"phone_number"`
-	Email              string             `json:"email"`
-	TotalCreditIssued  float64            `json:"total_credit_issued"`
-	TotalAbonosPaid    float64            `json:"total_abonos_paid"`
-	PendingBalance     float64            `json:"pending_balance"`
-	CreditLimit        float64            `json:"credit_limit"`
-	AvailableCredit    float64            `json:"available_credit"`
-	ExceedsCreditLimit bool               `json:"exceeds_credit_limit"`
-	MaxOverdueDays     int                `json:"max_overdue_days"`
-	LastPurchaseDate   string             `json:"last_purchase_date"`
-	LastPaymentDate    string             `json:"last_payment_date"`
-	AccountStatus      string             `json:"account_status"` // "AL_DIA", "PENDIENTE", "CUPO_EXCEDIDO", "EN_MORA"
-	AccountNotes       []string           `json:"account_notes,omitempty"`
-	Transactions       []FiadoTransaction `json:"transactions"`
+	CustomerID         int64               `json:"customer_id"`
+	CustomerCode       string              `json:"customer_code"`
+	CustomerName       string              `json:"customer_name"`
+	TaxNumber          string              `json:"tax_number"`
+	PhoneNumber        string              `json:"phone_number"`
+	Email              string              `json:"email"`
+	TotalCreditIssued  float64             `json:"total_credit_issued"`
+	TotalPaymentsPaid  float64             `json:"total_payments_paid"`
+	PendingBalance     float64             `json:"pending_balance"`
+	CreditLimit        float64             `json:"credit_limit"`
+	AvailableCredit    float64             `json:"available_credit"`
+	ExceedsCreditLimit bool                `json:"exceeds_credit_limit"`
+	MaxOverdueDays     int                 `json:"max_overdue_days"`
+	LastPurchaseDate   string              `json:"last_purchase_date"`
+	LastPaymentDate    string              `json:"last_payment_date"`
+	AccountStatus      string              `json:"account_status"` // "AL_DIA", "PENDIENTE", "LIMITE_EXCEDIDO", "VENCIDO"
+	AccountNotes       []string            `json:"account_notes,omitempty"`
+	Transactions       []CreditTransaction `json:"transactions"`
 }
 
-// LedgerReport contains the complete store-wide Fiados summary and per-customer accounts.
+// LedgerReport contains the complete store-wide Accounts Receivable summary and per-customer credit accounts.
 type LedgerReport struct {
-	GeneratedAt        time.Time               `json:"generated_at"`
-	StoreID            string                  `json:"store_id"`
-	CashRegisterID     string                  `json:"cash_register_id"`
-	TotalPendingPortfolio float64              `json:"total_pending_portfolio"`
-	ActiveDebtorCount  int                     `json:"active_debtor_count"`
-	OverLimitCount     int                     `json:"over_limit_count"`
-	OverdueCount       int                     `json:"overdue_count"`
-	Accounts           []CustomerCreditAccount `json:"accounts"`
-	AllTransactions    []FiadoTransaction      `json:"all_transactions"`
+	GeneratedAt           time.Time               `json:"generated_at"`
+	StoreID               string                  `json:"store_id"`
+	CashRegisterID        string                  `json:"cash_register_id"`
+	TotalPendingPortfolio float64                 `json:"total_pending_portfolio"`
+	ActiveDebtorCount     int                     `json:"active_debtor_count"`
+	OverLimitCount        int                     `json:"over_limit_count"`
+	OverdueCount          int                     `json:"overdue_count"`
+	Accounts              []CustomerCreditAccount `json:"accounts"`
+	AllTransactions       []CreditTransaction     `json:"all_transactions"`
 }
 
-// Engine computes customer credit accounts ("Fiados"), split payments, abonos, and notes (TODO-017..021).
+// Engine computes customer credit accounts, split payments, partial payments, and notes (TODO-017..021).
 type Engine struct {
 	Cfg     *config.Config
 	PosDB   *sql.DB
@@ -89,19 +89,20 @@ func (e *Engine) isCreditPaymentType(ptName string, markAsPaid bool) bool {
 		return true
 	}
 	lower := strings.ToLower(strings.TrimSpace(ptName))
-	for _, configured := range e.Cfg.Fiados.CreditPaymentTypes {
+	for _, configured := range e.Cfg.Credit.CreditPaymentTypes {
 		if lower == strings.ToLower(strings.TrimSpace(configured)) {
 			return true
 		}
 	}
-	return strings.Contains(lower, "fiado") ||
-		strings.Contains(lower, "crédito") ||
+	return strings.Contains(lower, "crédito") ||
 		strings.Contains(lower, "credito") ||
+		strings.Contains(lower, "credit") ||
 		strings.Contains(lower, "cartera") ||
-		strings.Contains(lower, "cuenta corriente")
+		strings.Contains(lower, "cuenta corriente") ||
+		strings.Contains(lower, "cuenta cliente")
 }
 
-// BuildLedger computes the complete Fiados ledger across all customers, documents, split payments, and CLI notes.
+// BuildLedger computes the complete Customer Credit Ledger across all customers, documents, split payments, and CLI notes.
 func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*LedgerReport, error) {
 	customers, err := db.ListCustomers(e.PosDB)
 	if err != nil {
@@ -111,7 +112,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 	if err != nil {
 		return nil, err
 	}
-	cliNotes, _ := db.ListFiadoNotes(e.StateDB, "")
+	cliNotes, _ := db.ListCreditNotes(e.StateDB, "")
 	customLimits, _ := db.GetCustomerCreditLimits(e.StateDB)
 
 	custByID := make(map[int64]db.Customer)
@@ -127,7 +128,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 	for _, n := range cliNotes {
 		formatted := n.Note
 		if n.DuePromise != "" {
-			formatted = fmt.Sprintf("%s (Compromiso: %s)", n.Note, n.DuePromise)
+			formatted = fmt.Sprintf("%s (Vencimiento acordado: %s)", n.Note, n.DuePromise)
 		}
 		if n.DocumentID > 0 {
 			notesByDocID[n.DocumentID] = append(notesByDocID[n.DocumentID], formatted)
@@ -146,7 +147,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 	getOrCreateAccount := func(custID int64, custName string) *CustomerCreditAccount {
 		cleanName := strings.TrimSpace(custName)
 		if cleanName == "" {
-			cleanName = "Cliente Sin Nombre"
+			cleanName = "Cliente General"
 		}
 		key := strings.ToLower(cleanName)
 		if acc, ok := accountsMap[key]; ok {
@@ -159,9 +160,9 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 				custID = byName.ID
 			}
 		}
-		limit := e.Cfg.Fiados.DefaultCreditLimit
+		limit := e.Cfg.Credit.DefaultCreditLimit
 		if limit <= 0 {
-			limit = 500000
+			limit = 500.0
 		}
 		if customLim, ok := customLimits[custID]; ok && customLim > 0 {
 			limit = customLim
@@ -191,14 +192,13 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		return acc
 	}
 
-	var allTxs []FiadoTransaction
+	var allTxs []CreditTransaction
 	now := time.Now()
 
 	for _, doc := range docs {
-		// Resolve customer by CustomerId, CustomerName, or note/order routing ("Cliente: <Nombre>") (TODO-018)
 		resolvedCustID := doc.CustomerID
 		resolvedCustName := strings.TrimSpace(doc.CustomerName)
-		if (resolvedCustName == "" || strings.EqualFold(resolvedCustName, "Consumidor Final")) && e.Cfg.Fiados.RouteByCustomerName {
+		if (resolvedCustName == "" || strings.EqualFold(resolvedCustName, "Consumidor Final")) && e.Cfg.Credit.RouteByCustomerName {
 			if routedName := extractRoutedCustomerName(doc, customers); routedName != "" {
 				resolvedCustName = routedName
 				if c, ok := custByNameLower[strings.ToLower(routedName)]; ok {
@@ -207,7 +207,6 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 			}
 		}
 
-		// Calculate payment breakdown: effective cash/abonos vs credit/fiado payments (TODO-017, TODO-019)
 		var cashPaid float64
 		var creditDeclared float64
 		var hasCreditPayment bool
@@ -219,20 +218,19 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 			if isCred {
 				hasCreditPayment = true
 				creditDeclared += p.Amount
-				paymentParts = append(paymentParts, fmt.Sprintf("%s (Fiado): $%.2f", p.PaymentTypeName, p.Amount))
+				paymentParts = append(paymentParts, fmt.Sprintf("%s (Crédito): $%.2f", p.PaymentTypeName, p.Amount))
 			} else {
 				cashPaid += p.Amount
-				paymentParts = append(paymentParts, fmt.Sprintf("%s (Abono): $%.2f", p.PaymentTypeName, p.Amount))
+				paymentParts = append(paymentParts, fmt.Sprintf("%s (Pago): $%.2f", p.PaymentTypeName, p.Amount))
 				if p.Date > latestPayDate {
 					latestPayDate = p.Date
 				}
 			}
 		}
 
-		isUnpaidDoc := e.Cfg.Fiados.DetectUnpaidStatus && doc.PaidStatus == 0
+		isUnpaidDoc := e.Cfg.Credit.DetectUnpaidStatus && doc.PaidStatus == 0
 		isSplitUnderpaid := len(doc.Payments) > 0 && (cashPaid+0.01 < doc.Total)
 
-		// A document belongs to the Fiados ledger if it was unpaid, used a credit payment type, or had a split balance
 		if !isUnpaidDoc && !hasCreditPayment && !isSplitUnderpaid {
 			continue
 		}
@@ -241,11 +239,9 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		var effectivePaid float64
 
 		if doc.PaidStatus != 0 && !hasCreditPayment && cashPaid >= doc.Total-0.01 {
-			// Fully settled document that was previously unpaid
 			effectivePaid = doc.Total
 			pending = 0
 		} else if doc.PaidStatus != 0 && hasCreditPayment && len(doc.Payments) == 1 && creditDeclared >= doc.Total-0.01 {
-			// PaidStatus was marked 1 by Aronium simply because a payment row of type "Fiado" covered the total
 			effectivePaid = 0
 			pending = doc.Total
 		} else {
@@ -253,17 +249,15 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 			pending = math.Max(0, doc.Total-effectivePaid)
 		}
 
-		// Build itemized product summary
 		var itemParts []string
 		for _, it := range doc.Items {
-			itemParts = append(itemParts, fmt.Sprintf("%.0fx %s ($%.0f)", it.Quantity, it.ProductName, it.Total))
+			itemParts = append(itemParts, fmt.Sprintf("%.0fx %s ($%.2f)", it.Quantity, it.ProductName, it.Total))
 		}
 		itemsSummary := strings.Join(itemParts, ", ")
 		if itemsSummary == "" {
 			itemsSummary = "(Sin detalle de ítems)"
 		}
 
-		// Combine Aronium internal/public notes + CLI notes
 		var aroniumNotes []string
 		if strings.TrimSpace(doc.Note) != "" {
 			aroniumNotes = append(aroniumNotes, strings.TrimSpace(doc.Note))
@@ -280,8 +274,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		}
 		combined = append(combined, docCLINotes...)
 
-		// Calculate overdue days
-		dueDays := e.Cfg.Fiados.DefaultDueDays
+		dueDays := e.Cfg.Credit.DefaultDueDays
 		if dueDays <= 0 {
 			dueDays = 15
 		}
@@ -305,13 +298,13 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		if pending <= 0.01 {
 			txStatus = "PAGADO"
 		} else if overdueDays > 0 {
-			txStatus = "EN_MORA"
+			txStatus = "VENCIDO"
 		} else if effectivePaid > 0.01 {
 			txStatus = "ABONADO_PARCIAL"
 		}
 
 		acc := getOrCreateAccount(resolvedCustID, resolvedCustName)
-		tx := FiadoTransaction{
+		tx := CreditTransaction{
 			DocumentID:       doc.ID,
 			DocumentNumber:   doc.Number,
 			Date:             doc.Date,
@@ -334,7 +327,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 
 		acc.Transactions = append(acc.Transactions, tx)
 		acc.TotalCreditIssued += doc.Total
-		acc.TotalAbonosPaid += effectivePaid
+		acc.TotalPaymentsPaid += effectivePaid
 		acc.PendingBalance += pending
 		if doc.Date > acc.LastPurchaseDate {
 			acc.LastPurchaseDate = doc.Date
@@ -349,7 +342,6 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		allTxs = append(allTxs, tx)
 	}
 
-	// Ensure customers that have CLI notes or credit limits also appear if filtered
 	for _, c := range customers {
 		key := strings.ToLower(strings.TrimSpace(c.Name))
 		if _, exists := accountsMap[key]; !exists {
@@ -375,9 +367,9 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 		case acc.PendingBalance <= 0.01:
 			acc.AccountStatus = "AL_DIA"
 		case acc.ExceedsCreditLimit:
-			acc.AccountStatus = "CUPO_EXCEDIDO"
+			acc.AccountStatus = "LIMITE_EXCEDIDO"
 		case acc.MaxOverdueDays > 0:
-			acc.AccountStatus = "EN_MORA"
+			acc.AccountStatus = "VENCIDO"
 		default:
 			acc.AccountStatus = "PENDIENTE"
 		}
@@ -412,7 +404,6 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 	return report, nil
 }
 
-// extractRoutedCustomerName checks if a note or order number names a specific customer when CustomerId was left default (TODO-018).
 func extractRoutedCustomerName(doc db.Document, customers []db.Customer) string {
 	candidates := []string{doc.OrderNumber, doc.Note, doc.InternalNote}
 	for _, text := range candidates {
@@ -420,8 +411,7 @@ func extractRoutedCustomerName(doc db.Document, customers []db.Customer) string 
 		if trimmed == "" {
 			continue
 		}
-		// Match explicit prefix "Cliente: Nombre" or "Fiado: Nombre" or "Cuenta: Nombre"
-		for _, prefix := range []string{"cliente:", "fiado:", "cuenta:"} {
+		for _, prefix := range []string{"cliente:", "cuenta:", "crédito:", "credito:"} {
 			lower := strings.ToLower(trimmed)
 			if idx := strings.Index(lower, prefix); idx >= 0 {
 				rest := strings.TrimSpace(trimmed[idx+len(prefix):])
@@ -433,7 +423,6 @@ func extractRoutedCustomerName(doc db.Document, customers []db.Customer) string 
 				}
 			}
 		}
-		// Or match an existing customer name in pos.db
 		for _, c := range customers {
 			cName := strings.TrimSpace(c.Name)
 			if cName != "" && !strings.EqualFold(cName, "Consumidor Final") && strings.Contains(strings.ToLower(trimmed), strings.ToLower(cName)) {
@@ -444,33 +433,33 @@ func extractRoutedCustomerName(doc db.Document, customers []db.Customer) string 
 	return ""
 }
 
-// GenerateStatement renders a customer's credit account statement ready for WhatsApp, text, or Drive storage (TODO-020, TODO-049).
+// GenerateStatement renders a customer's credit account statement ready for digital messaging, text, or Drive storage (TODO-020, TODO-049).
 func GenerateStatement(acc CustomerCreditAccount, storeName, dualCurrency string, dualRate float64) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("====================================================\n"))
-	sb.WriteString(fmt.Sprintf("   ESTADO DE CUENTA / CARTERA DE FIADOS\n"))
+	sb.WriteString("====================================================\n")
+	sb.WriteString("   ESTADO DE CUENTA DE CRÉDITO DE CLIENTE\n")
 	sb.WriteString(fmt.Sprintf("   Comercio: %s\n", storeName))
 	sb.WriteString(fmt.Sprintf("   Fecha:    %s\n", time.Now().Format("2006-01-02 15:04")))
-	sb.WriteString(fmt.Sprintf("====================================================\n"))
+	sb.WriteString("====================================================\n")
 	sb.WriteString(fmt.Sprintf("Cliente:         %s (ID: %d)\n", acc.CustomerName, acc.CustomerID))
 	if acc.PhoneNumber != "" {
 		sb.WriteString(fmt.Sprintf("Teléfono:        %s\n", acc.PhoneNumber))
 	}
 	sb.WriteString(fmt.Sprintf("Estado Cuenta:   %s\n", acc.AccountStatus))
-	sb.WriteString(fmt.Sprintf("Total Fiado:     $%.2f COP\n", acc.TotalCreditIssued))
-	sb.WriteString(fmt.Sprintf("Total Abonado:   $%.2f COP\n", acc.TotalAbonosPaid))
-	sb.WriteString(fmt.Sprintf("SALDO PENDIENTE: $%.2f COP\n", acc.PendingBalance))
+	sb.WriteString(fmt.Sprintf("Total Crédito:   $%.2f\n", acc.TotalCreditIssued))
+	sb.WriteString(fmt.Sprintf("Total Pagado:    $%.2f\n", acc.TotalPaymentsPaid))
+	sb.WriteString(fmt.Sprintf("SALDO PENDIENTE: $%.2f\n", acc.PendingBalance))
 	if dualCurrency != "" && dualRate > 0 {
 		sb.WriteString(fmt.Sprintf("Equivalente %s:  %.2f %s (Tasa: %.2f)\n", dualCurrency, acc.PendingBalance/dualRate, dualCurrency, dualRate))
 	}
-	sb.WriteString(fmt.Sprintf("Cupo Asignado:   $%.2f COP (Disponible: $%.2f)\n", acc.CreditLimit, acc.AvailableCredit))
+	sb.WriteString(fmt.Sprintf("Límite Crédito:  $%.2f (Disponible: $%.2f)\n", acc.CreditLimit, acc.AvailableCredit))
 	if len(acc.AccountNotes) > 0 {
 		sb.WriteString(fmt.Sprintf("Anotaciones:     %s\n", strings.Join(acc.AccountNotes, " | ")))
 	}
 	sb.WriteString("----------------------------------------------------\n")
-	sb.WriteString("DETALLE DE FACTURAS Y ABONOS:\n")
+	sb.WriteString("DETALLE DE DOCUMENTOS Y PAGOS:\n")
 	for _, tx := range acc.Transactions {
-		sb.WriteString(fmt.Sprintf("- [%s] Factura #%s (%s) | Total: $%.2f | Abonado: $%.2f | Saldo: $%.2f | %s\n",
+		sb.WriteString(fmt.Sprintf("- [%s] Factura #%s (%s) | Total: $%.2f | Pagado: $%.2f | Saldo: $%.2f | %s\n",
 			tx.Date, tx.DocumentNumber, tx.CashRegisterID, tx.TotalDocument, tx.PaidAmount, tx.PendingBalance, tx.Status))
 		sb.WriteString(fmt.Sprintf("  Productos: %s\n", tx.ItemsSummary))
 		if tx.CombinedNotes != "" {

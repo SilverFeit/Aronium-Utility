@@ -166,7 +166,7 @@ func migrateStateDB(conn *sql.DB) error {
 		);
 		INSERT OR IGNORE INTO sync_checkpoints (id, last_document_id, last_payment_id, stock_hash, catalog_hash)
 		VALUES (1, 0, 0, '', '');`,
-		`CREATE TABLE IF NOT EXISTS fiado_notes (
+		`CREATE TABLE IF NOT EXISTS credit_notes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			customer_id INTEGER NOT NULL DEFAULT 0,
 			customer_name TEXT NOT NULL DEFAULT '',
@@ -231,16 +231,16 @@ func migrateStateDB(conn *sql.DB) error {
 			product_id INTEGER NOT NULL,
 			product_name TEXT NOT NULL,
 			custom_price REAL NOT NULL,
-			currency TEXT NOT NULL DEFAULT 'COP',
+			currency TEXT NOT NULL DEFAULT 'USD',
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(list_name, product_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS fiscal_config (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
-			issuer_nit TEXT NOT NULL,
+			issuer_tax_id TEXT NOT NULL,
 			issuer_name TEXT NOT NULL,
 			prefix TEXT NOT NULL,
-			resolution_number TEXT NOT NULL,
+			authorization_number TEXT NOT NULL,
 			range_from INTEGER NOT NULL,
 			range_to INTEGER NOT NULL,
 			current_consecutive INTEGER NOT NULL DEFAULT 1,
@@ -257,7 +257,7 @@ func migrateStateDB(conn *sql.DB) error {
 			customer_email TEXT NOT NULL,
 			total REAL NOT NULL,
 			status TEXT NOT NULL DEFAULT 'PENDING',
-			cufe TEXT NOT NULL DEFAULT '',
+			document_uuid TEXT NOT NULL DEFAULT '',
 			qr_data TEXT NOT NULL DEFAULT '',
 			xml_path TEXT NOT NULL DEFAULT '',
 			pdf_path TEXT NOT NULL DEFAULT '',
@@ -470,7 +470,7 @@ func ListDocuments(posDB *sql.DB, sinceDocID int64, defaultRegisterID string) ([
 				COALESCE(d.UserId, 0),
 				COALESCE(c.Id, 0),
 				COALESCE(c.Name, 'Consumidor Final'),
-				COALESCE(c.TaxNumber, '222222222222'),
+				COALESCE(c.TaxNumber, '999999999999'),
 				COALESCE(c.PhoneNumber, ''),
 				COALESCE(c.Email, ''),
 				COALESCE(d.OrderNumber, ''),
@@ -716,13 +716,13 @@ func SaveCheckpoint(stateDB *sql.DB, cp *SyncCheckpoint) error {
 	return err
 }
 
-// AddFiadoNote saves an extended customer/document note in aronium_utility_state.db without touching pos.db (TODO-020).
-func AddFiadoNote(stateDB *sql.DB, note FiadoNote) (int64, error) {
+// AddCreditNote saves an extended customer/document note in aronium_utility_state.db without touching pos.db (TODO-020).
+func AddCreditNote(stateDB *sql.DB, note CreditNote) (int64, error) {
 	if note.CreatedBy == "" {
 		note.CreatedBy = "CLI"
 	}
 	res, err := stateDB.Exec(`
-		INSERT INTO fiado_notes (customer_id, customer_name, document_id, document_num, note, due_promise, created_by)
+		INSERT INTO credit_notes (customer_id, customer_name, document_id, document_num, note, due_promise, created_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?);
 	`, note.CustomerID, note.CustomerName, note.DocumentID, note.DocumentNum, note.Note, note.DuePromise, note.CreatedBy)
 	if err != nil {
@@ -731,11 +731,11 @@ func AddFiadoNote(stateDB *sql.DB, note FiadoNote) (int64, error) {
 	return res.LastInsertId()
 }
 
-// ListFiadoNotes retrieves external fiado notes from aronium_utility_state.db.
-func ListFiadoNotes(stateDB *sql.DB, customerFilter string) ([]FiadoNote, error) {
+// ListCreditNotes retrieves external customer credit notes from aronium_utility_state.db.
+func ListCreditNotes(stateDB *sql.DB, customerFilter string) ([]CreditNote, error) {
 	query := `
 		SELECT id, customer_id, customer_name, document_id, document_num, note, due_promise, created_by, COALESCE(CAST(created_at AS TEXT), '')
-		FROM fiado_notes
+		FROM credit_notes
 	`
 	var args []any
 	if strings.TrimSpace(customerFilter) != "" {
@@ -749,9 +749,9 @@ func ListFiadoNotes(stateDB *sql.DB, customerFilter string) ([]FiadoNote, error)
 		return nil, err
 	}
 	defer rows.Close()
-	var notes []FiadoNote
+	var notes []CreditNote
 	for rows.Next() {
-		var n FiadoNote
+		var n CreditNote
 		var createdStr string
 		if err := rows.Scan(&n.ID, &n.CustomerID, &n.CustomerName, &n.DocumentID, &n.DocumentNum, &n.Note, &n.DuePromise, &n.CreatedBy, &createdStr); err != nil {
 			return nil, err
@@ -762,7 +762,7 @@ func ListFiadoNotes(stateDB *sql.DB, customerFilter string) ([]FiadoNote, error)
 	return notes, nil
 }
 
-// SetCustomerCreditLimit configures a customer's maximum credit ("fiado") limit in aronium_utility_state.db (TODO-021).
+// SetCustomerCreditLimit configures a customer's maximum credit limit in aronium_utility_state.db (TODO-021).
 func SetCustomerCreditLimit(stateDB *sql.DB, customerID int64, customerName string, limit float64) error {
 	_, err := stateDB.Exec(`
 		INSERT INTO customer_credit_limits (customer_id, customer_name, credit_limit, updated_at)

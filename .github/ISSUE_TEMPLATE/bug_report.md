@@ -1,6 +1,6 @@
 ---
 name: Bug Report / Reporte de Error
-about: Report a bug in Aronium Utility (Sync, Fiados, Google Drive, Backup, Hub, or DIAN)
+about: Report a bug in Aronium Utility or Aronium Utility UI (Sync, Credit Accounts, Inventory, Google Drive, Backup, Hub, or Fiscal)
 title: "[BUG] "
 labels: bug
 assignees: ''

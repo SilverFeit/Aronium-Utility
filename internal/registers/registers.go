@@ -38,7 +38,7 @@ type RegisterSalesSummary struct {
 	TransactionCount int           `json:"transaction_count"`
 	TotalSales       float64       `json:"total_sales"`
 	CashSales        float64       `json:"cash_sales"`
-	CreditFiadoSales float64       `json:"credit_fiado_sales"`
+	CreditSales      float64       `json:"credit_sales"`
 	AverageTicket    float64       `json:"average_ticket"`
 	Documents        []db.Document `json:"documents,omitempty"`
 }
@@ -178,7 +178,7 @@ func (m *Manager) QuerySales(defaultRegisterID, filterRegisterID, fromDate, toDa
 		sum.TransactionCount++
 		sum.TotalSales += doc.Total
 		if doc.PaidStatus == 0 {
-			sum.CreditFiadoSales += doc.Total
+			sum.CreditSales += doc.Total
 		} else {
 			sum.CashSales += doc.Total
 		}

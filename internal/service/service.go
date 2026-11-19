@@ -53,20 +53,21 @@ func (m *Manager) Install() (string, error) {
 		return fmt.Sprintf("Service manifest registered at %s", unitPath), nil
 	}
 
-	// On Windows, try sc.exe first (requires admin), and fallback to schtasks (runs under user account at logon without UAC prompt!)
+	// Always register in HKCU\Software\Microsoft\Windows\CurrentVersion\Run so the CLI starts immediately when the PC boots/logs on
 	binCmd := fmt.Sprintf(`"%s" watch --config "%s"`, m.BinaryPath, m.ConfigPath)
+	_ = exec.Command("reg.exe", "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", ServiceName, "/t", "REG_SZ", "/d", binCmd, "/f").Run()
+
+	// Also attempt Windows Service (sc.exe) or Scheduled Task (schtasks.exe)
 	scCmd := exec.Command("sc.exe", "create", ServiceName, "binPath=", binCmd, "start=", "auto", "DisplayName=", "Aronium Utility Sync Service")
 	if out, err := scCmd.CombinedOutput(); err == nil {
-		return fmt.Sprintf("Windows Service '%s' installed via sc.exe: %s", ServiceName, strings.TrimSpace(string(out))), nil
+		return fmt.Sprintf("Windows Service '%s' & Auto-Start registered: %s", ServiceName, strings.TrimSpace(string(out))), nil
 	}
 
-	// Fallback: Windows Scheduled Task at Logon so non-admin cashiers can run it seamlessly
 	taskCmd := exec.Command("schtasks.exe", "/Create", "/F", "/SC", "ONLOGON", "/TN", TaskName, "/TR", binCmd)
-	out, err := taskCmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to register background service/task: %v (%s)", err, strings.TrimSpace(string(out)))
+	if out, err := taskCmd.CombinedOutput(); err == nil {
+		return fmt.Sprintf("Windows Startup Task '%s' & Registry Run registered: %s", TaskName, strings.TrimSpace(string(out))), nil
 	}
-	return fmt.Sprintf("Windows Background Task '%s' installed via schtasks: %s", TaskName, strings.TrimSpace(string(out))), nil
+	return fmt.Sprintf("Windows Startup Registry Run '%s' registered (%s)", ServiceName, binCmd), nil
 }
 
 // Start launches the background service or daemon process.

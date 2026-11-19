@@ -27,12 +27,12 @@ type Config struct {
 	PosDBPath        string          `yaml:"pos_db_path" json:"pos_db_path"`
 	StateDBPath      string          `yaml:"state_db_path" json:"state_db_path"`
 	Watch            WatchConfig     `yaml:"watch" json:"watch"`
-	Fiados           FiadosConfig    `yaml:"fiados" json:"fiados"`
+	Credit           CreditConfig    `yaml:"credit" json:"credit"`
 	Inventory        InventoryConfig `yaml:"inventory" json:"inventory"`
 	GoogleDrive      GDriveConfig    `yaml:"google_drive" json:"google_drive"`
 	Hub              HubConfig       `yaml:"hub" json:"hub"`
 	Backup           BackupConfig    `yaml:"backup" json:"backup"`
-	DIAN             DIANConfig      `yaml:"dian" json:"dian"`
+	Fiscal           FiscalConfig    `yaml:"fiscal" json:"fiscal"`
 	Reports          ReportsConfig   `yaml:"reports" json:"reports"`
 	Hooks            HooksConfig     `yaml:"hooks" json:"hooks"`
 }
@@ -42,10 +42,10 @@ type WatchConfig struct {
 	DebounceMs     int  `yaml:"debounce_ms" json:"debounce_ms"`
 	AutoSyncDrive  bool `yaml:"auto_sync_drive" json:"auto_sync_drive"`
 	AutoSyncHub    bool `yaml:"auto_sync_hub" json:"auto_sync_hub"`
-	AutoEmitDIAN   bool `yaml:"auto_emit_dian" json:"auto_emit_dian"`
+	AutoEmitFiscal bool `yaml:"auto_emit_fiscal" json:"auto_emit_fiscal"`
 }
 
-type FiadosConfig struct {
+type CreditConfig struct {
 	DetectUnpaidStatus  bool     `yaml:"detect_unpaid_status" json:"detect_unpaid_status"`
 	CreditPaymentTypes  []string `yaml:"credit_payment_types" json:"credit_payment_types"`
 	DefaultCreditLimit  float64  `yaml:"default_credit_limit" json:"default_credit_limit"`
@@ -98,35 +98,34 @@ type BackupConfig struct {
 	UploadToGDrive bool   `yaml:"upload_to_gdrive" json:"upload_to_gdrive"`
 }
 
-type DIANConfig struct {
-	Enabled          bool    `yaml:"enabled" json:"enabled"`
-	Environment      string  `yaml:"environment" json:"environment"` // "test" or "production"
-	IssuerNIT        string  `yaml:"issuer_nit" json:"issuer_nit"`
-	IssuerName       string  `yaml:"issuer_name" json:"issuer_name"`
-	Prefix           string  `yaml:"prefix" json:"prefix"`
-	ResolutionNumber string  `yaml:"resolution_number" json:"resolution_number"`
-	RangeFrom        int64   `yaml:"range_from" json:"range_from"`
-	RangeTo          int64   `yaml:"range_to" json:"range_to"`
-	ProviderURL      string  `yaml:"provider_url" json:"provider_url"`
-	UVTValue         float64 `yaml:"uvt_value" json:"uvt_value"`
-	UVTThreshold     float64 `yaml:"uvt_threshold" json:"uvt_threshold"`
-	CopyToGDrive     bool    `yaml:"copy_to_gdrive" json:"copy_to_gdrive"`
+type FiscalConfig struct {
+	Enabled               bool    `yaml:"enabled" json:"enabled"`
+	Environment           string  `yaml:"environment" json:"environment"` // "test" or "production"
+	IssuerTaxID           string  `yaml:"issuer_tax_id" json:"issuer_tax_id"`
+	IssuerName            string  `yaml:"issuer_name" json:"issuer_name"`
+	Prefix                string  `yaml:"prefix" json:"prefix"`
+	AuthorizationNumber   string  `yaml:"authorization_number" json:"authorization_number"`
+	RangeFrom             int64   `yaml:"range_from" json:"range_from"`
+	RangeTo               int64   `yaml:"range_to" json:"range_to"`
+	ProviderURL           string  `yaml:"provider_url" json:"provider_url"`
+	RequireCustomerAbove  float64 `yaml:"require_customer_above" json:"require_customer_above"`
+	CopyToGDrive          bool    `yaml:"copy_to_gdrive" json:"copy_to_gdrive"`
 }
 
 type ReportsConfig struct {
-	SMTPHost        string            `yaml:"smtp_host,omitempty" json:"smtp_host,omitempty"`
-	SMTPPort        int               `yaml:"smtp_port,omitempty" json:"smtp_port,omitempty"`
-	SMTPUser        string            `yaml:"smtp_user,omitempty" json:"smtp_user,omitempty"`
-	Recipients      []string          `yaml:"recipients,omitempty" json:"recipients,omitempty"`
-	TelegramChatID  string            `yaml:"telegram_chat_id,omitempty" json:"telegram_chat_id,omitempty"`
-	ESCPOSPrinters  map[string]string `yaml:"escpos_printers,omitempty" json:"escpos_printers,omitempty"`
+	SMTPHost       string            `yaml:"smtp_host,omitempty" json:"smtp_host,omitempty"`
+	SMTPPort       int               `yaml:"smtp_port,omitempty" json:"smtp_port,omitempty"`
+	SMTPUser       string            `yaml:"smtp_user,omitempty" json:"smtp_user,omitempty"`
+	Recipients     []string          `yaml:"recipients,omitempty" json:"recipients,omitempty"`
+	TelegramChatID string            `yaml:"telegram_chat_id,omitempty" json:"telegram_chat_id,omitempty"`
+	ESCPOSPrinters map[string]string `yaml:"escpos_printers,omitempty" json:"escpos_printers,omitempty"`
 }
 
 type HooksConfig struct {
-	OnSale     []string `yaml:"on_sale,omitempty" json:"on_sale,omitempty"`
-	OnFiado    []string `yaml:"on_fiado,omitempty" json:"on_fiado,omitempty"`
-	OnLowStock []string `yaml:"on_low_stock,omitempty" json:"on_low_stock,omitempty"`
-	OnDayClose []string `yaml:"on_day_close,omitempty" json:"on_day_close,omitempty"`
+	OnSale          []string `yaml:"on_sale,omitempty" json:"on_sale,omitempty"`
+	OnCreditAccount []string `yaml:"on_credit_account,omitempty" json:"on_credit_account,omitempty"`
+	OnLowStock      []string `yaml:"on_low_stock,omitempty" json:"on_low_stock,omitempty"`
+	OnDayClose      []string `yaml:"on_day_close,omitempty" json:"on_day_close,omitempty"`
 }
 
 // DefaultAppDataDir returns %LOCALAPPDATA%\AroniumUtility on Windows or ~/.aronium-utility on Unix.
@@ -186,7 +185,7 @@ func DefaultConfigPath() string {
 	return filepath.Join(DefaultAppDataDir(), "aronium-util.yaml")
 }
 
-// DefaultConfig returns a sensible offline-first configuration ready for LATAM/Colombia retail stores.
+// DefaultConfig returns a universal offline-first configuration ready for retail stores.
 func DefaultConfig() *Config {
 	appDir := DefaultAppDataDir()
 	hostname, _ := os.Hostname()
@@ -194,7 +193,7 @@ func DefaultConfig() *Config {
 		hostname = "POS-01"
 	}
 	return &Config{
-		StoreID:          "TIENDA-01",
+		StoreID:          "STORE-01",
 		StoreName:        "Mi Comercio Aronium",
 		CashRegisterID:   "POS-01",
 		CashRegisterName: fmt.Sprintf("Caja Principal (%s)", hostname),
@@ -205,20 +204,20 @@ func DefaultConfig() *Config {
 			DebounceMs:     1000,
 			AutoSyncDrive:  true,
 			AutoSyncHub:    false,
-			AutoEmitDIAN:   false,
+			AutoEmitFiscal: false,
 		},
-		Fiados: FiadosConfig{
+		Credit: CreditConfig{
 			DetectUnpaidStatus: true,
 			CreditPaymentTypes: []string{
-				"Fiado",
-				"FIADO",
 				"Crédito",
 				"Credito",
+				"Credit",
 				"Cuenta Corriente",
+				"Cuenta Cliente",
 				"Cartera",
 				"A Crédito",
 			},
-			DefaultCreditLimit:  500000,
+			DefaultCreditLimit:  500.0,
 			DefaultDueDays:      15,
 			RouteByCustomerName: true,
 		},
@@ -226,8 +225,8 @@ func DefaultConfig() *Config {
 			DefaultMinStock:       5,
 			AlertNegativeStock:    true,
 			ExpirationWarningDays: []int{7, 15, 30},
-			DualCurrencyCode:      "USD",
-			DualCurrencyRate:      4200.0,
+			DualCurrencyCode:      "EUR",
+			DualCurrencyRate:      1.08,
 		},
 		GoogleDrive: GDriveConfig{
 			Enabled:            true,
@@ -236,7 +235,7 @@ func DefaultConfig() *Config {
 			TokenVaultPath:     filepath.Join(appDir, "gdrive.token.enc"),
 			LocalDriveSyncDir:  filepath.Join(appDir, "GoogleDriveSync"),
 			RootFolderName:     "AroniumUtility",
-			MasterWorkbookName: "Aronium_Inventario_y_Fiados.xlsx",
+			MasterWorkbookName: "Aronium_Inventario_y_Cuentas_Credito.xlsx",
 			PerCustomerSheets:  true,
 		},
 		Hub: HubConfig{
@@ -257,19 +256,18 @@ func DefaultConfig() *Config {
 			RetainMonthly:  12,
 			UploadToGDrive: true,
 		},
-		DIAN: DIANConfig{
-			Enabled:          false,
-			Environment:      "test",
-			IssuerNIT:        "900000000-1",
-			IssuerName:       "COMERCIO DEMO S.A.S.",
-			Prefix:           "POS",
-			ResolutionNumber: "18760000001",
-			RangeFrom:        1,
-			RangeTo:          50000,
-			ProviderURL:      "https://api-dian-sandbox.example.com/v1/documents",
-			UVTValue:         49799,
-			UVTThreshold:     5,
-			CopyToGDrive:     true,
+		Fiscal: FiscalConfig{
+			Enabled:              false,
+			Environment:          "test",
+			IssuerTaxID:          "900000000-1",
+			IssuerName:           "COMERCIO DEMO S.A.",
+			Prefix:               "POS",
+			AuthorizationNumber:  "AUTH-2026-0001",
+			RangeFrom:            1,
+			RangeTo:              50000,
+			ProviderURL:          "https://api-fiscal-sandbox.example.com/v1/documents",
+			RequireCustomerAbove: 250.0,
+			CopyToGDrive:         true,
 		},
 		Reports: ReportsConfig{
 			SMTPPort:       587,
@@ -394,7 +392,7 @@ func DecryptBytes(ciphertext []byte, passphrase string) ([]byte, error) {
 	return gcm.Open(nil, nonce, enc, nil)
 }
 
-// SecretVault stores encrypted OAuth tokens, DIAN API keys, Hub tokens, and SMTP secrets on disk.
+// SecretVault stores encrypted OAuth tokens, fiscal API keys, Hub tokens, and SMTP secrets on disk.
 type SecretVault struct {
 	Secrets map[string]string `json:"secrets"`
 }
@@ -459,7 +457,7 @@ func loadVault() (*SecretVault, error) {
 	return &v, nil
 }
 
-// --- PII Masking for Logs & Diagnostics (Habeas Data Ley 1581 de 2012 - TODO-065) ---
+// --- PII Masking for Logs & Diagnostics (Data Privacy - TODO-065) ---
 
 var (
 	emailRegex = regexp.MustCompile(`([a-zA-Z0-9._%+\-]{1,2})[a-zA-Z0-9._%+\-]*@([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})`)
@@ -475,10 +473,10 @@ func MaskPhone(phone string) string {
 	return strings.Repeat("*", len(trimmed)-2) + trimmed[len(trimmed)-2:]
 }
 
-// MaskTaxID masks a Colombian CC/NIT or tax identifier leaving only the last 3 characters.
+// MaskTaxID masks a tax identifier leaving only the last 3 characters.
 func MaskTaxID(taxID string) string {
 	trimmed := strings.TrimSpace(taxID)
-	if trimmed == "" || trimmed == "222222222222" {
+	if trimmed == "" || trimmed == "999999999999" {
 		return trimmed
 	}
 	if len(trimmed) <= 3 {
@@ -501,11 +499,11 @@ func MaskEmail(email string) string {
 	return name[:1] + "***@" + parts[1]
 }
 
-// RedactPII scrubs emails, long numeric IDs (CC/NIT/phones), and bearer tokens from log strings.
+// RedactPII scrubs emails, numeric tax/phone IDs, and bearer tokens from log strings.
 func RedactPII(input string) string {
 	out := emailRegex.ReplaceAllString(input, "$1***@$2")
 	out = digitRegex.ReplaceAllStringFunc(out, func(m string) string {
-		if m == "222222222222" {
+		if m == "999999999999" {
 			return m
 		}
 		if len(m) <= 4 {

@@ -39,13 +39,13 @@ func CreateSyntheticPosDB(destPath string) error {
 		AccessLevel INTEGER DEFAULT 10,
 		IsEnabled INTEGER DEFAULT 1
 	);
-	INSERT INTO User (Id, FirstName, LastName, Email) VALUES (1, 'Cajero', 'Principal', 'cajero@mitienda.co');
+	INSERT INTO User (Id, FirstName, LastName, Email) VALUES (1, 'Cajero', 'Principal', 'cajero@comercio.local');
 
 	CREATE TABLE Warehouse (
 		Id INTEGER PRIMARY KEY AUTOINCREMENT,
 		Name TEXT NOT NULL
 	);
-	INSERT INTO Warehouse (Id, Name) VALUES (1, 'Bodega Principal');
+	INSERT INTO Warehouse (Id, Name) VALUES (1, 'Almacén Principal');
 
 	CREATE TABLE CashRegister (
 		Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +59,7 @@ func CreateSyntheticPosDB(destPath string) error {
 		Rate REAL NOT NULL DEFAULT 19.0,
 		Code TEXT
 	);
-	INSERT INTO Tax (Id, Name, Rate, Code) VALUES (1, 'IVA 19%', 19.0, '01'), (2, 'Exento 0%', 0.0, '00');
+	INSERT INTO Tax (Id, Name, Rate, Code) VALUES (1, 'Impuesto General 19%', 19.0, '01'), (2, 'Exento 0%', 0.0, '00');
 
 	CREATE TABLE ProductGroup (
 		Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +67,7 @@ func CreateSyntheticPosDB(destPath string) error {
 		ParentGroupId INTEGER
 	);
 	INSERT INTO ProductGroup (Id, Name) VALUES
-		(1, 'Abarrotes'),
+		(1, 'Alimentos'),
 		(2, 'Lácteos'),
 		(3, 'Bebidas'),
 		(4, 'Cocina');
@@ -212,23 +212,23 @@ func CreateSyntheticPosDB(destPath string) error {
 	-- Payment Types
 	INSERT INTO PaymentType (Id, Name, Code, IsCustomerRequired, MarkAsPaid) VALUES
 		(1, 'Efectivo', 'CASH', 0, 1),
-		(2, 'Nequi / Transferencia', 'NEQUI', 0, 1),
-		(3, 'Fiado', 'FIADO', 1, 0);
+		(2, 'Transferencia / Tarjeta', 'TRANSFER', 0, 1),
+		(3, 'Crédito Cliente', 'CREDIT', 1, 0);
 
 	-- Customers
 	INSERT INTO Customer (Id, Code, Name, TaxNumber, Address, City, Email, PhoneNumber, DueDatePeriod) VALUES
-		(1, 'CF-001', 'Consumidor Final', '222222222222', 'Local', 'Bogotá', 'ventas@consumidor.co', '3000000000', 0),
-		(2, 'CLI-101', 'Don Pedro Pérez', '79123456', 'Calle 45 #12-30', 'Bogotá', 'pedro.perez@correo.co', '3105551234', 15),
-		(3, 'CLI-102', 'Doña María Gómez', '52987654', 'Carrera 15 #80-10', 'Medellín', 'maria.gomez@correo.co', '3154449876', 15),
-		(4, 'CLI-103', 'Restaurante El Sabor S.A.S.', '901234567-8', 'Av. Principal #10-20', 'Cali', 'contabilidad@elsabor.co', '3209998877', 30);
+		(1, 'CF-001', 'Consumidor Final', '999999999999', 'Local', 'Centro', 'ventas@comercio.local', '5550000000', 0),
+		(2, 'CLI-101', 'Pedro Pérez', '79123456', 'Av. Central 45-12', 'Centro', 'pedro.perez@correo.org', '5551234567', 15),
+		(3, 'CLI-102', 'María Gómez', '52987654', 'Calle 15 #80-10', 'Norte', 'maria.gomez@correo.org', '5559876543', 15),
+		(4, 'CLI-103', 'Comercial El Sol S.A.', '901234567-8', 'Av. Industrial 10-20', 'Sur', 'contabilidad@elsol.org', '5558887766', 30);
 
 	-- Products
 	INSERT INTO Product (Id, ProductGroupId, Name, Code, MeasurementUnit, Price, Cost, Markup) VALUES
-		(1, 1, 'Arroz Diana 1kg', 'ARR-001', 'UND', 4500, 3400, 32.35),
-		(2, 1, 'Aceite Girasol 1L', 'ACE-002', 'UND', 11000, 8500, 29.41),
-		(3, 2, 'Leche Entera Alquería 1L', 'LEC-003', 'UND', 4200, 3300, 27.27),
-		(4, 3, 'Café Sello Rojo 500g', 'CAF-004', 'UND', 16500, 12800, 28.90),
-		(5, 4, 'Bandeja Paisa Especial', 'COC-005', 'UND', 28000, 15000, 86.67);
+		(1, 1, 'Arroz Grano Largo 1kg', 'ARR-001', 'UND', 4500, 3400, 32.35),
+		(2, 1, 'Aceite Vegetal 1L', 'ACE-002', 'UND', 11000, 8500, 29.41),
+		(3, 2, 'Leche Entera 1L', 'LEC-003', 'UND', 4200, 3300, 27.27),
+		(4, 3, 'Café Molido 500g', 'CAF-004', 'UND', 16500, 12800, 28.90),
+		(5, 4, 'Menú Ejecutivo Especial', 'COC-005', 'UND', 28000, 15000, 86.67);
 
 	INSERT INTO Barcode (ProductId, Value) VALUES
 		(1, '7701234500011'),
@@ -252,18 +252,18 @@ func CreateSyntheticPosDB(destPath string) error {
 	INSERT INTO Payment (DocumentId, PaymentTypeId, Amount, Date)
 	VALUES (1, 1, 9000, '2026-11-10 09:15:00');
 
-	-- Document 2: Full Fiado sale for Don Pedro Pérez ($20.000 unpaid)
+	-- Document 2: Full Credit sale for Pedro Pérez ($20000 unpaid)
 	INSERT INTO Document (Id, Number, CustomerId, Date, StockDate, Total, DocumentTypeId, PaidStatus, Note, InternalNote, DueDate)
-	VALUES (2, '20-200-000002', 2, '2026-11-01 14:30:00', '2026-11-01 14:30:00', 20000, 2, 0, 'Lleva mercado fiado para pagar el sábado', 'POS-01', '2026-11-10');
+	VALUES (2, '20-200-000002', 2, '2026-11-01 14:30:00', '2026-11-01 14:30:00', 20000, 2, 0, 'Compra a crédito para pago fin de semana', 'POS-01', '2026-11-10');
 	INSERT INTO DocumentItem (DocumentId, ProductId, Quantity, Price, ProductCost, Total) VALUES
 		(2, 1, 2, 4500, 3400, 9000),
 		(2, 2, 1, 11000, 8500, 11000);
 	INSERT INTO Payment (DocumentId, PaymentTypeId, Amount, Date)
 	VALUES (2, 3, 20000, '2026-11-01 14:30:00');
 
-	-- Document 3: Split payment sale for Doña María Gómez (Total $50.000 -> Paid $20.000 Efectivo + $30.000 Fiado)
+	-- Document 3: Split payment sale for María Gómez (Total $50000 -> Paid $20000 Efectivo + $30000 Crédito Cliente)
 	INSERT INTO Document (Id, Number, CustomerId, Date, StockDate, Total, DocumentTypeId, PaidStatus, Note, InternalNote, DueDate)
-	VALUES (3, '20-200-000003', 3, '2026-11-12 17:45:00', '2026-11-12 17:45:00', 50000, 2, 0, 'Abonó 20 mil en efectivo y dejó 30 mil fiados', 'POS-02', '2026-11-27');
+	VALUES (3, '20-200-000003', 3, '2026-11-12 17:45:00', '2026-11-12 17:45:00', 50000, 2, 0, 'Pago parcial en efectivo y saldo a cuenta de crédito', 'POS-02', '2026-11-27');
 	INSERT INTO DocumentItem (DocumentId, ProductId, Quantity, Price, ProductCost, Total) VALUES
 		(3, 4, 2, 16500, 12800, 33000),
 		(3, 3, 2, 4200, 3300, 8400),
@@ -294,8 +294,8 @@ func OpenWritablePosDB(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", u.String())
 }
 
-// SimulateNewFiadoSale inserts a new credit ("Fiado") sale under a customer's name into a synthetic pos.db.
-func SimulateNewFiadoSale(posPath, docNumber string, customerID int64, productID int64, qty, unitPrice float64, note, registerID string) (int64, error) {
+// SimulateNewCreditSale inserts a new customer credit sale into a synthetic pos.db.
+func SimulateNewCreditSale(posPath, docNumber string, customerID int64, productID int64, qty, unitPrice float64, note, registerID string) (int64, error) {
 	conn, err := OpenWritablePosDB(posPath)
 	if err != nil {
 		return 0, err
@@ -332,8 +332,8 @@ func SimulateNewFiadoSale(posPath, docNumber string, customerID int64, productID
 	return docID, nil
 }
 
-// SimulateCustomerAbono inserts a partial or full payment against an existing document in a synthetic pos.db.
-func SimulateCustomerAbono(posPath string, docID int64, abonoAmount float64, markDocumentFullyPaid bool) error {
+// SimulateCustomerPayment inserts a partial or full payment against an existing document in a synthetic pos.db.
+func SimulateCustomerPayment(posPath string, docID int64, paymentAmount float64, markDocumentFullyPaid bool) error {
 	conn, err := OpenWritablePosDB(posPath)
 	if err != nil {
 		return err
@@ -343,7 +343,7 @@ func SimulateCustomerAbono(posPath string, docID int64, abonoAmount float64, mar
 	_, err = conn.Exec(`
 		INSERT INTO Payment (DocumentId, PaymentTypeId, Amount, Date)
 		VALUES (?, 1, ?, '2026-11-18 19:30:00');
-	`, docID, abonoAmount)
+	`, docID, paymentAmount)
 	if err != nil {
 		return err
 	}

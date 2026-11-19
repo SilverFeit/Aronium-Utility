@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
+	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
-	"github.com/SilverFeit/Aronium-Utility/internal/fiados"
 )
 
 // ProductSalesRank tracks top-selling products for daily closing reports (TODO-047).
@@ -28,21 +28,21 @@ type ProductSalesRank struct {
 	Revenue     float64 `json:"revenue"`
 }
 
-// DailyClosingReport consolidates daily sales, payment methods, cash registers, new Fiados, abonos, and dual currency (TODO-047, TODO-049).
+// DailyClosingReport consolidates daily sales, payment methods, cash registers, new customer credit issued, payments received, and dual currency (TODO-047, TODO-049).
 type DailyClosingReport struct {
 	Date                 string             `json:"date"`
 	StoreID              string             `json:"store_id"`
 	StoreName            string             `json:"store_name"`
 	TotalTransactions    int                `json:"total_transactions"`
-	TotalSalesCOP        float64            `json:"total_sales_cop"`
+	TotalSales           float64            `json:"total_sales"`
 	DualCurrencyCode     string             `json:"dual_currency_code"`
 	DualCurrencyRate     float64            `json:"dual_currency_rate"`
 	TotalSalesDual       float64            `json:"total_sales_dual"`
 	SalesByPaymentMethod map[string]float64 `json:"sales_by_payment_method"`
 	SalesByRegister      map[string]float64 `json:"sales_by_register"`
-	NewFiadosIssuedCOP   float64            `json:"new_fiados_issued_cop"`
-	AbonosReceivedCOP    float64            `json:"abonos_received_cop"`
-	TotalPortfolioCOP    float64            `json:"total_portfolio_cop"`
+	NewCreditIssued      float64            `json:"new_credit_issued"`
+	PaymentsReceived     float64            `json:"payments_received"`
+	TotalPortfolio       float64            `json:"total_portfolio"`
 	TopProducts          []ProductSalesRank `json:"top_products"`
 }
 
@@ -67,19 +67,19 @@ func (e *Engine) BuildDailyReport(dateFilter string) (*DailyClosingReport, error
 	if err != nil {
 		return nil, err
 	}
-	fiadosEng := fiados.NewEngine(e.Cfg, e.PosDB, e.StateDB)
-	ledger, err := fiadosEng.BuildLedger("", 0)
+	creditEng := credit.NewEngine(e.Cfg, e.PosDB, e.StateDB)
+	ledger, err := creditEng.BuildLedger("", 0)
 	if err != nil {
 		return nil, err
 	}
 
 	dualCode := e.Cfg.Inventory.DualCurrencyCode
 	if dualCode == "" {
-		dualCode = "USD"
+		dualCode = "EUR"
 	}
 	dualRate := e.Cfg.Inventory.DualCurrencyRate
 	if dualRate <= 0 {
-		dualRate = 4200.0
+		dualRate = 1.08
 	}
 
 	rep := &DailyClosingReport{
@@ -90,7 +90,7 @@ func (e *Engine) BuildDailyReport(dateFilter string) (*DailyClosingReport, error
 		DualCurrencyRate:     dualRate,
 		SalesByPaymentMethod: make(map[string]float64),
 		SalesByRegister:      make(map[string]float64),
-		TotalPortfolioCOP:    ledger.TotalPendingPortfolio,
+		TotalPortfolio:       ledger.TotalPendingPortfolio,
 	}
 	if rep.Date == "" {
 		rep.Date = time.Now().Format("2006-01-02")
@@ -103,20 +103,20 @@ func (e *Engine) BuildDailyReport(dateFilter string) (*DailyClosingReport, error
 			continue
 		}
 		rep.TotalTransactions++
-		rep.TotalSalesCOP += doc.Total
+		rep.TotalSales += doc.Total
 		rep.SalesByRegister[doc.CashRegisterID] += doc.Total
 
 		if len(doc.Payments) == 0 && doc.PaidStatus == 0 {
-			rep.SalesByPaymentMethod["Fiado (Sin Pago)"] += doc.Total
-			rep.NewFiadosIssuedCOP += doc.Total
+			rep.SalesByPaymentMethod["Crédito Cliente (Sin Pago)"] += doc.Total
+			rep.NewCreditIssued += doc.Total
 		}
 		for _, p := range doc.Payments {
 			rep.SalesByPaymentMethod[p.PaymentTypeName] += p.Amount
 			lower := strings.ToLower(p.PaymentTypeName)
-			if strings.Contains(lower, "fiado") || strings.Contains(lower, "crédito") || strings.Contains(lower, "credito") || !p.MarkAsPaid {
-				rep.NewFiadosIssuedCOP += p.Amount
+			if strings.Contains(lower, "crédito") || strings.Contains(lower, "credito") || strings.Contains(lower, "credit") || !p.MarkAsPaid {
+				rep.NewCreditIssued += p.Amount
 			} else {
-				rep.AbonosReceivedCOP += p.Amount
+				rep.PaymentsReceived += p.Amount
 			}
 		}
 
@@ -134,7 +134,7 @@ func (e *Engine) BuildDailyReport(dateFilter string) (*DailyClosingReport, error
 		}
 	}
 
-	rep.TotalSalesDual = rep.TotalSalesCOP / dualRate
+	rep.TotalSalesDual = rep.TotalSales / dualRate
 
 	for _, rk := range prodMap {
 		rep.TopProducts = append(rep.TopProducts, *rk)
@@ -156,21 +156,21 @@ func (e *Engine) FormatDailyReportText(rep *DailyClosingReport) string {
 	sb.WriteString(fmt.Sprintf("  REPORTE DE CIERRE DIARIO — %s (%s)\n", rep.StoreName, rep.StoreID))
 	sb.WriteString(fmt.Sprintf("  Fecha de Corte: %s\n", rep.Date))
 	sb.WriteString("=========================================================\n")
-	sb.WriteString(fmt.Sprintf("Transacciones Cerradas: %d\n", rep.TotalTransactions))
-	sb.WriteString(fmt.Sprintf("Ventas Totales (COP):   $%.2f COP\n", rep.TotalSalesCOP))
-	sb.WriteString(fmt.Sprintf("Ventas Totales (%s):   %.2f %s (Tasa TRM: %.2f)\n", rep.DualCurrencyCode, rep.TotalSalesDual, rep.DualCurrencyCode, rep.DualCurrencyRate))
-	sb.WriteString(fmt.Sprintf("Nuevos Fiados Emitidos: $%.2f COP\n", rep.NewFiadosIssuedCOP))
-	sb.WriteString(fmt.Sprintf("Ingresos / Abonos:      $%.2f COP\n", rep.AbonosReceivedCOP))
-	sb.WriteString(fmt.Sprintf("Cartera Total Activa:   $%.2f COP\n", rep.TotalPortfolioCOP))
+	sb.WriteString(fmt.Sprintf("Transacciones Cerradas:  %d\n", rep.TotalTransactions))
+	sb.WriteString(fmt.Sprintf("Ventas Totales:          $%.2f\n", rep.TotalSales))
+	sb.WriteString(fmt.Sprintf("Ventas Totales (%s):    %.2f %s (Tasa: %.2f)\n", rep.DualCurrencyCode, rep.TotalSalesDual, rep.DualCurrencyCode, rep.DualCurrencyRate))
+	sb.WriteString(fmt.Sprintf("Nuevos Créditos:         $%.2f\n", rep.NewCreditIssued))
+	sb.WriteString(fmt.Sprintf("Ingresos / Pagos:        $%.2f\n", rep.PaymentsReceived))
+	sb.WriteString(fmt.Sprintf("Cartera Total Activa:    $%.2f\n", rep.TotalPortfolio))
 	sb.WriteString("---------------------------------------------------------\n")
 	sb.WriteString("VENTAS POR MEDIO DE PAGO:\n")
 	for k, v := range rep.SalesByPaymentMethod {
-		sb.WriteString(fmt.Sprintf("  - %-22s: $%.2f COP\n", k, v))
+		sb.WriteString(fmt.Sprintf("  - %-22s: $%.2f\n", k, v))
 	}
 	sb.WriteString("---------------------------------------------------------\n")
 	sb.WriteString("VENTAS POR CAJA REGISTRADORA:\n")
 	for k, v := range rep.SalesByRegister {
-		sb.WriteString(fmt.Sprintf("  - %-22s: $%.2f COP\n", k, v))
+		sb.WriteString(fmt.Sprintf("  - %-22s: $%.2f\n", k, v))
 	}
 	sb.WriteString("---------------------------------------------------------\n")
 	sb.WriteString("TOP PRODUCTOS VENDIDOS:\n")
@@ -193,13 +193,11 @@ func (e *Engine) SaveAndDeliver(ctx context.Context, rep *DailyClosingReport) (s
 		return "", err
 	}
 
-	// Optional Telegram Bot Notification
 	botToken := config.LoadSecret("telegram_bot_token", "ARONIUM_TELEGRAM_BOT_TOKEN")
 	if botToken != "" && e.Cfg.Reports.TelegramChatID != "" {
 		_ = sendTelegramMessage(ctx, botToken, e.Cfg.Reports.TelegramChatID, text)
 	}
 
-	// Optional SMTP Email Notification
 	smtpPass := config.LoadSecret("smtp_password", "ARONIUM_SMTP_PASSWORD")
 	if e.Cfg.Reports.SMTPHost != "" && smtpPass != "" && len(e.Cfg.Reports.Recipients) > 0 {
 		addr := fmt.Sprintf("%s:%d", e.Cfg.Reports.SMTPHost, e.Cfg.Reports.SMTPPort)
@@ -235,12 +233,9 @@ func sendTelegramMessage(ctx context.Context, botToken, chatID, text string) err
 // BuildESCPOSTicket formats an ESC/POS thermal printer byte stream for a kitchen/bar station (TODO-050).
 func BuildESCPOSTicket(stationName string, doc db.Document, items []db.DocumentItem) []byte {
 	var buf bytes.Buffer
-	// ESC @ (Initialize printer)
 	buf.Write([]byte{0x1B, 0x40})
-	// ESC E 1 (Bold ON)
 	buf.Write([]byte{0x1B, 0x45, 0x01})
 	buf.WriteString(fmt.Sprintf("*** COMANDA %s ***\n", strings.ToUpper(stationName)))
-	// ESC E 0 (Bold OFF)
 	buf.Write([]byte{0x1B, 0x45, 0x00})
 	buf.WriteString(fmt.Sprintf("Orden/Factura: #%s | Caja: %s\n", doc.Number, doc.CashRegisterID))
 	buf.WriteString(fmt.Sprintf("Cliente:       %s\n", doc.CustomerName))
@@ -254,7 +249,6 @@ func BuildESCPOSTicket(stationName string, doc db.Document, items []db.DocumentI
 		buf.WriteString(fmt.Sprintf("NOTA: %s\n", doc.Note))
 	}
 	buf.WriteString("\n\n\n")
-	// GS V 66 0 (Partial paper cut)
 	buf.Write([]byte{0x1D, 0x56, 0x42, 0x00})
 	return buf.Bytes()
 }

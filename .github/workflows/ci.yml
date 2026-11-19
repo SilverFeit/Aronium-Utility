@@ -12,16 +12,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node.js for Svelte + TypeScript UI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Build Tauri 2 + Svelte 5 + TypeScript Frontend
+        run: |
+          cd ui
+          npm install --no-audit --no-fund
+          npm run build
+          cd ..
+          rm -rf cmd/aronium-utility-ui/dist
+          mkdir -p cmd/aronium-utility-ui/dist
+          cp -R ui/dist/. cmd/aronium-utility-ui/dist/
+
       - name: Run Go Vet & Unit / BDD / Concurrency QA Tests
         run: |
           go vet ./...
           go test -v -race ./...
 
-      - name: Cross-Compile Windows x64, Windows x86 & Installer Packages
+      - name: Cross-Compile Windows x64, Windows x86 (CLI + Aronium Utility UI + Unified Installer)
         run: ./Scripts/package_release.sh

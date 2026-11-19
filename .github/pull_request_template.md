@@ -1,7 +1,7 @@
 ## Summary / Resumen
 
 - **Related TODO / Issue:**
-- **Module(s) Touched:** (`db`, `fiados`, `inventory`, `sync/gdrive`, `registers`, `hub`, `backup`, `migrate`, `reports`, `dian`, `installer`)
+- **Module(s) Touched:** (`db`, `credit`, `inventory`, `sync/gdrive`, `registers`, `hub`, `backup`, `migrate`, `reports`, `fiscal`, `ui`, `installer`)
 
 ## Verification Checklist
 - [ ] `go test -v ./...` passes all unit, BDD, and QA Matrix (`TC-001`..`TC-030`) tests

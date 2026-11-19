@@ -47,7 +47,7 @@ type Document struct {
 	DueDate          string         `json:"due_date"`
 	Discount         float64        `json:"discount"`
 	DiscountType     int            `json:"discount_type"`
-	PaidStatus       int            `json:"paid_status"` // 0 = Unpaid / Fiado, 1 = Paid (or 2 = Paid in some versions)
+	PaidStatus       int            `json:"paid_status"` // 0 = Unpaid / Credit, 1 = Paid (or 2 = Paid in some versions)
 	DateCreated      string         `json:"date_created"`
 	DateUpdated      string         `json:"date_updated"`
 	Items            []DocumentItem `json:"items,omitempty"`
@@ -135,22 +135,22 @@ type SyncCheckpoint struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-type FiadoNote struct {
-	ID          int64     `json:"id"`
-	CustomerID  int64     `json:"customer_id"`
-	CustomerName string   `json:"customer_name"`
-	DocumentID  int64     `json:"document_id"`
-	DocumentNum string    `json:"document_num"`
-	Note        string    `json:"note"`
-	DuePromise  string    `json:"due_promise,omitempty"`
-	CreatedBy   string    `json:"created_by"`
-	CreatedAt   time.Time `json:"created_at"`
+type CreditNote struct {
+	ID           int64     `json:"id"`
+	CustomerID   int64     `json:"customer_id"`
+	CustomerName string    `json:"customer_name"`
+	DocumentID   int64     `json:"document_id"`
+	DocumentNum  string    `json:"document_num"`
+	Note         string    `json:"note"`
+	DuePromise   string    `json:"due_promise,omitempty"`
+	CreatedBy    string    `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type OutboxItem struct {
 	ID             int64     `json:"id"`
 	IdempotencyKey string    `json:"idempotency_key"`
-	Target         string    `json:"target"` // "gdrive", "hub", "dian"
+	Target         string    `json:"target"` // "gdrive", "hub", "fiscal"
 	EventType      string    `json:"event_type"`
 	PayloadJSON    string    `json:"payload_json"`
 	Status         string    `json:"status"` // "PENDING", "SENT", "FAILED"

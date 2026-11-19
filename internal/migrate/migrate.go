@@ -238,8 +238,8 @@ func GeneratePostMigrationChecklist(storeID string, m MigrationMetrics) string {
 - [x] **Productos y Stock:** %d productos (Unidades totales en inventario: %.2f)
 - [x] **Clientes:** %d clientes registrados
 - [x] **Documentos Comerciales:** %d documentos (%d líneas de ítem)
-- [x] **Sumatoria Financiera (`+"`SUM(Total)`"+`):** $%.2f COP
-- [x] **Pagos y Abonos (`+"`SUM(Payment.Amount)`"+`):** %d registros ($%.2f COP)
+- [x] **Sumatoria Financiera (`+"`SUM(Total)`"+`):** $%.2f
+- [x] **Pagos y Abonos (`+"`SUM(Payment.Amount)`"+`):** %d registros ($%.2f)
 
 ## 2. Componentes Locales que Requieren Reconfiguración Manual por Estación (MIG-006)
 De acuerdo con la especificación funcional de Aronium Pro (Sección 5.2 / MIG-006), los siguientes elementos **NO** se transfieren automáticamente con la base de datos y deben revisarse en cada computador (`+"`POS-01`"+`, `+"`POS-02`"+`, `+"`POS-ADMIN`"+`):

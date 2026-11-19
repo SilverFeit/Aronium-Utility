@@ -2,26 +2,27 @@
 
 <img src="docs/assets/app-icon.svg" alt="Aronium Utility Icon" width="118" height="118" />
 
-# Aronium Utility
+# Aronium Utility & Aronium Utility UI
 
-**Open-Source Windows CLI & Background Sync Companion for Aronium Lite (`pos.db`) — Customer Credit ("Fiados") Ledger, Live Inventory Table, Direct Web OAuth 2.0 Google Drive & Sheets Sync, Encrypted Hot Backups, Multi-Register Hub & DIAN Electronic Invoicing (`aronium-util` + `aronium-util-setup.exe`)**
+**Open-Source Windows POS Companion for Aronium Lite (`pos.db`) — Go CLI Engine (`aronium-util.exe`) + Tauri 2, Svelte & TypeScript Desktop UI (`aronium-utility-ui.exe`) + Customer Credit Accounts, Live Inventory Table & Direct Web OAuth 2.0 Google Drive / Sheets Sync**
 
 [![Release](https://img.shields.io/github/v/release/SilverFeit/Aronium-Utility?style=flat-square&label=Download&color=0ea5e9)](https://github.com/SilverFeit/Aronium-Utility/releases/latest)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11%20(x64%20%26%20x86)-0078D6?style=flat-square&logo=windows)](https://github.com/SilverFeit/Aronium-Utility/releases/latest)
-[![Engine](https://img.shields.io/badge/Engine-100%25%20Pure%20Go%20%2B%20SQLite%20(RO)-10b981?style=flat-square)](#architecture--offline-first-sqlite-safety)
+[![Desktop UI](https://img.shields.io/badge/Desktop%20UI-Tauri%202%20%2B%20Svelte%205%20%2B%20TypeScript-f97316?style=flat-square&logo=tauri)](#architecture-tauri-2--svelte--typescript--go-cli-sidecar)
+[![Engine](https://img.shields.io/badge/Sidecar%20Engine-100%25%20Pure%20Go%20%2B%20SQLite%20(RO)-10b981?style=flat-square)](#architecture-tauri-2--svelte--typescript--go-cli-sidecar)
 [![Cloud](https://img.shields.io/badge/Cloud-Google%20Drive%20v3%20%2B%20Sheets%20v4%20(Web%20OAuth2)-22c55e?style=flat-square)](#direct-google-drive--sheets-web-authentication)
 [![License](https://img.shields.io/badge/License-MIT-6366f1?style=flat-square)](LICENSE)
 
 ```powershell
-# 1-Click Windows Setup Installer (installs aronium-util.exe + configures PATH & ARONIUM_* env vars)
-.\aronium-util-setup-x64.exe --register POS-01 --store-id TIENDA-01 --web-login
+# Unified 1-Click Windows Setup Installer (installs aronium-util.exe + aronium-utility-ui.exe, sets PATH & registers boot startup)
+.\aronium-util-setup-x64.exe --register POS-01 --store-id STORE-01 --launch-ui
 ```
 
-[**Download Windows Installer (`.exe`)**](https://github.com/SilverFeit/Aronium-Utility/releases/latest) · [**Google Drive Web Auth**](#direct-google-drive--sheets-web-authentication) · [**Fiados & Inventory Table**](#1-customer-credit-fiados--live-inventory-table-in-google-drive) · [**CLI Reference**](#command-line-interface-aronium-util) · [**Architecture**](#architecture--offline-first-sqlite-safety) · [**User Guide**](docs/USER_GUIDE.md) · [**Technical Spec**](docs/SPEC.md) · [**Español**](#-español--resumen-del-proyecto)
+[**Download Unified Windows Installer (`.exe`)**](https://github.com/SilverFeit/Aronium-Utility/releases/latest) · [**Aronium Utility UI (Tauri 2 + Svelte)**](#architecture-tauri-2--svelte--typescript--go-cli-sidecar) · [**Google Drive Web Auth**](#2-direct-google-drive--sheets-web-authentication) · [**Customer Credit & Inventory Table**](#1-customer-credit-accounts--live-inventory-table-in-google-drive) · [**CLI Reference**](#command-line-interface-aronium-util) · [**User Guide**](docs/USER_GUIDE.md) · [**Technical Spec**](docs/SPEC.md) · [**Español**](#-español--resumen-del-proyecto)
 
 <br />
 
-<img src="docs/assets/hero-banner.svg" alt="Aronium Utility — Customer Fiados, Live Inventory, Google Drive Web OAuth, Multi-Register Hub & DIAN" width="100%" />
+<img src="docs/assets/hero-banner.svg" alt="Aronium Utility & Aronium Utility UI — Tauri 2 + Svelte + Go CLI Sidecar, Customer Credit Accounts, Live Inventory & Google Drive" width="100%" />
 
 </div>
 
@@ -29,74 +30,86 @@
 
 ## Overview
 
-**Aronium Utility** is an independent, clean-room, open-source companion CLI (`aronium-util.exe`) and Windows installer (`aronium-util-setup-x64.exe` / `aronium-util-setup-x86.exe`) written in **100% Go** for retail stores using **Aronium Lite** (`%LOCALAPPDATA%\Aronium\Data\pos.db`).
+**Aronium Utility** combines a high-performance **100% Go CLI & Background Sync Engine (`aronium-util.exe`)** with a lightweight **Tauri 2 + Svelte 5 + TypeScript Desktop Application (`Aronium Utility UI` / `aronium-utility-ui.exe`)** designed for retail stores running **Aronium Lite** (`%LOCALAPPDATA%\Aronium\Data\pos.db`).
 
-While **Aronium Lite** is fast, unlimited, and 100% offline at the checkout counter, its local SQLite database is an isolated data island: store owners cannot check live stock or customer credit tabs (*"fiados"*) from their phone, have no automated cloud backups in Google Drive, and face expensive barriers when scaling to multiple registers or local fiscal compliance (**DIAN** in Colombia).
+- **Automatic Background Execution on PC Startup:** As soon as the POS computer powers on, `aronium-util.exe watch` runs automatically in the background, reading `pos.db` in strict read-only mode (`mode=ro&_busy_timeout=5000`) and processing live sales, inventory updates, and customer credit accounts in real time.
+- **Visual Desktop Interface (`Aronium Utility UI`) with Zero Duplicated Logic:** Whenever a store clerk or manager wants to visually inspect the dashboard, check sales metrics, validate inventory/Kardex, or add an annotation/credit account for a customer, they can open **Aronium Utility UI** (either by clicking **`aronium-utility-ui.exe`** or running **`aronium-util ui`**). Built with **Tauri 2 + Svelte + TypeScript**, the UI draws via the operating system's native WebView (zero Chromium/Electron bloat) and consumes the existing Go CLI as a **sidecar process** over IPC/JSON — **never duplicating a single line of business logic**.
 
-**Aronium Utility bridges that gap without ever locking or altering Aronium's database:** it opens `pos.db` in strict read-only mode (`mode=ro&_busy_timeout=5000`), watches transactions in real time, and synchronizes a unified **Live Inventory + Customer "Fiados" Table (`Aronium_Inventario_y_Fiados.xlsx`)** and individual customer credit accounts directly to **Google Drive** and **Google Sheets** via a built-in **Web OAuth 2.0 login flow**.
-
-> **Legal & Compliance Disclaimer:** *Aronium Utility* is an independent open-source interoperability, backup, analytics, and cloud synchronization tool licensed under the MIT License. It reads the local SQLite database (`pos.db`) generated by Aronium Lite in strict read-only mode. It does not modify proprietary binaries, evade licensing systems, or replace official Aronium Pro support.
+> **Legal & Compliance Disclaimer:** *Aronium Utility* is an independent open-source interoperability, backup, analytics, and cloud synchronization suite licensed under the MIT License. It reads the local SQLite database (`pos.db`) generated by Aronium Lite in strict read-only mode. It does not modify proprietary binaries, evade licensing systems, or replace official Aronium Pro support.
 
 <details open>
-<summary><strong>🇪🇸 Español — Resumen del Proyecto (Propuesta Central)</strong></summary>
+<summary><strong>🇪🇸 Español — Resumen del Proyecto y Arquitectura</strong></summary>
 
 <br />
 
-**Aronium Utility** es una herramienta de línea de comandos (`aronium-util.exe`) y servicio en segundo plano para Windows (64-bit y 32-bit), desarrollada **100% en Go** bajo **licencia MIT**, creada para potenciar comercios que usan **Aronium Lite**:
+**Aronium Utility** une el motor de ejecución en **Go (`aronium-util.exe`)** con la aplicación gráfica de escritorio **Aronium Utility UI (`aronium-utility-ui.exe`)** construida con **Tauri 2 + Svelte + TypeScript**:
 
-- **Instalador Sencillo para Windows (`aronium-util-setup-x64.exe` / `install.bat`):** Copia el ejecutable `aronium-util.exe`, lo agrega automáticamente al `PATH` del usuario de Windows y configura las variables de entorno (`ARONIUM_UTIL_HOME`, `ARONIUM_UTIL_CONFIG`, `ARONIUM_POS_DB`, `ARONIUM_STATE_DB`, `ARONIUM_STORE_ID`, `ARONIUM_REGISTER_ID`).
-- **Conexión Directa a Google Drive con Autenticación vía Web (`aronium-util drive login`):** Abre automáticamente el navegador web en un portal local (`http://127.0.0.1:8765`) para iniciar sesión con tu cuenta de Google, autorizar Google Drive y Google Sheets, y guardar el token cifrado con **AES-256-GCM** y renovación automática.
-- **Tabla Unificada de Inventario y Enrutamiento Automático de "Fiados" por Cliente:**
-  - Con el simple hecho de pasar una cuenta en Aronium Lite asignada al nombre de un cliente (ej. *"Don Pedro Pérez"* o *"Doña María Gómez"*) con pago **`Fiado`** (o pago dividido: parte en efectivo y el resto fiado), `aronium-util` toma la factura, los productos comprados, los abonos y las anotaciones y los lleva automáticamente a:
-    1. La tabla maestra **`Aronium_Inventario_y_Fiados.xlsx`** (pestañas `Resumen_Fiados`, `Detalle_Fiados`, `Inventario` y una pestaña individual `Cliente_<Nombre>` por cada cliente) sincronizada en tu **Google Drive** y **Google Sheets**.
-    2. La carpeta individual del cliente en `/AroniumUtility/Fiados/Clientes/<Nombre_Cliente>.xlsx`, `.csv` y `_Estado_Cuenta.txt` (listo para enviar por WhatsApp).
-- **Respaldos en Caliente (`VACUUM INTO` + AES-256-GCM), Hub Multi-Caja Offline-First (`POS-01`, `POS-02`) y Puente Fiscal DIAN Colombia (UBL 2.1 + CUFE SHA-384 + QR).**
+1. **Instalador Unificado para Windows (`aronium-util-setup-x64.exe` / `aronium-util-setup-x86.exe`):**
+   - Una sola instalación crea tanto el ejecutable del CLI (**`aronium-util.exe`**) como el ejecutable de la interfaz gráfica (**`aronium-utility-ui.exe`**), configura el `PATH` y las variables de entorno de Windows, crea el acceso directo en el Escritorio y registra el arranque automático con el sistema.
+2. **Operación en Vivo desde que se Enciende el Equipo + Interfaz Visual para el Dependiente:**
+   - Apenas se enciende el computador de caja, el CLI (`aronium-util.exe watch`) se ejecuta automáticamente en segundo plano vigilando las transacciones en vivo sobre `pos.db`.
+   - Cuando el dependiente o administrador desea ver de forma visual el **Dashboard y Métricas**, validar el **Inventario y Kardex**, o **agregar una anotación / compromiso de pago / límite de crédito** a la cuenta de un cliente, abre **Aronium Utility UI** (desde el ejecutable `aronium-utility-ui.exe` o ejecutando `aronium-util ui`).
+   - **Cero Duplicación de Lógica:** Siguiendo la arquitectura **Tauri 2 + Svelte + TypeScript → Sidecar CLI**, la interfaz gráfica actúa exclusivamente como capa de presentación e interacción consumiendo los resultados JSON del CLI en Go.
+3. **Conexión Directa a Google Drive vía Web + Tabla Unificada de Inventario y Cuentas de Crédito por Cliente:**
+   - Al pasar una factura en Aronium Lite con el nombre de un cliente y pago a crédito (o pago dividido), el motor enruta automáticamente la factura, los productos comprados y las anotaciones a la cuenta individual de ese cliente en **`Aronium_Inventario_y_Cuentas_Credito.xlsx`** y **`/AroniumUtility/Cuentas_Credito/Clientes/<Nombre_Cliente>.xlsx`** en Google Drive y Google Sheets.
 
 </details>
 
 ---
 
-## Why Aronium Utility + Aronium Lite?
+## Architecture: Tauri 2 + Svelte + TypeScript → Go CLI Sidecar
 
-| Capability | **Aronium Lite + Aronium Utility (MIT)** | Standalone Aronium Lite | Aronium Pro (~$10 USD/mo + Paid Plugins) |
-| :--- | :--- | :--- | :--- |
-| **Customer "Fiados" & Notes in Google Drive / Sheets** | **Automatic routing by customer name to Master Table & per-customer sheets in Drive** | Local PC only; no cloud or mobile access | Local LAN SQL Server only; no Google Drive sync |
-| **Live Inventory & Low/Negative Stock Alerts** | **Real-time `Inventario` table in Google Drive + Kardex & Expiration Alerts** | Local PC only | Local LAN only |
-| **Direct Web OAuth 2.0 Google Drive Login** | **Built-in `aronium-util drive login` browser flow + AES-256-GCM token vault** | None | None |
-| **Hot Encrypted Cloud Backups** | **SQLite Online Backup (`VACUUM INTO`) + AES-256-GCM + SHA-256 + Verified Restore** | Manual local copy | Manual SQL Server backup |
-| **Multi-Register Operation (`POS-01`, `POS-02`)** | **Offline-First Central Hub (keeps selling if LAN/Server drops + conflict audit)** | Single PC only | Requires Windows x64 SQL Server Express always online |
-| **Scheduled Daily Reports & Dual Currency** | **Included free (SMTP, Telegram, Drive, TRM COP/USD & ESC/POS Kitchen Routing)** | Paid plugins (*Email Reporting* $30/yr, *Print Stations* $5/mo) | Paid plugins licensed separately |
-| **Colombia DIAN Electronic Invoicing** | **Modular UBL 2.1 / POS Electrónico connector with SHA-384 CUFE, QR & Contingency** | Not supported natively | Not supported natively |
+<div align="center">
+<img src="docs/assets/sync-architecture.svg" alt="Aronium Utility UI (Tauri 2 + Svelte + TypeScript) -> Go CLI Sidecar (aronium-util) -> pos.db & Google Drive" width="100%" />
+</div>
+
+```text
+Desktop UI — Svelte 5 + TypeScript (Aronium Utility UI)
+Components, credit account forms, live inventory tables, navigation & dashboard metrics
+      │
+      ▼  Tauri 2 IPC / Commands
+Tauri Core — Rust & Native Sidecar Host (`aronium-utility-ui.exe`)
+Process management, file permissions & sidecar IPC communication (OS WebView — 0% Chromium bundle)
+      │
+      ▼  Sidecar Execution (`aronium-util.exe <command> --json`)
+Existing Go CLI (`aronium-util.exe`)
+100% of business logic preserved + automatic background watcher on Windows startup
+      │
+      ▼  Data & Outputs
+JSON · SQLite (`pos.db` mode=ro + `aronium_utility_state.db`) · `.xlsx` · Google Drive v3 & Sheets v4
+```
 
 ---
 
 ## Key Features
 
-### 1. Customer Credit ("Fiados") & Live Inventory Table in Google Drive
-- **Automatic Customer Account Routing:** Whenever a cashier records an unpaid sale (`PaidStatus = 0`), a credit payment type (`"Fiado"`, `"Crédito"`, `"Cuenta Corriente"`, `"Cartera"`), or a **split payment** (e.g., customer pays `$20.000` cash and leaves `$30.000` on credit) under a customer's name, `aronium-util` routes the invoice, itemized products, and notes directly to that customer's account.
-- **Partial Payments (*Abonos*) & Credit Limits:** Automatically detects subsequent partial payments (`Payment`), recalculates historical credit vs. active pending balance, enforces per-customer credit limits (`CUPO_EXCEDIDO`), and tracks overdue days (`EN_MORA`).
-- **Non-Intrusive Extended Notes (`aronium-util fiados note add`):** Add payment promises and collection notes stored safely in `aronium_utility_state.db` without ever writing to `pos.db`, merged seamlessly with Aronium's `Document.Note` and `Document.InternalNote` in Google Drive.
-- **Unified Multi-Sheet Workbook (`Aronium_Inventario_y_Fiados.xlsx`):**
-  - `Resumen_Fiados`: Customer ID, Name, Tax ID, Phone, Total Historical Credit, Total Abonos, **Current Pending Balance**, Credit Limit, Available Credit, Overdue Days, Last Purchase, Status, and Notes.
-  - `Detalle_Fiados`: Full invoice-by-invoice breakdown with itemized products, payment split, and combined notes.
-  - `Inventario`: Live catalog with SKU, Barcode, Category, Current Stock, Min Stock, Unit Cost, Sale Price, Total Cost/Retail Valuation, Margin %, Stock Status (`OK`, `STOCK_BAJO`, `AGOTADO`, `STOCK_NEGATIVO`), and Expiration Date.
-  - `Cliente_<Nombre>` tabs + `/AroniumUtility/Fiados/Clientes/<Nombre_Cliente>.xlsx` and WhatsApp-ready statements.
+### 1. Customer Credit Accounts & Live Inventory Table in Google Drive
+- **Automatic Customer Account Routing:** Whenever a sale is recorded in Aronium Lite with unpaid status (`PaidStatus = 0`), a credit payment type (`"Crédito"`, `"Credit"`, `"Cuenta Corriente"`, `"Cuenta Cliente"`, `"Cartera"`), or a **split payment** under a customer's name, `aronium-util` routes the invoice, itemized products, and notes directly to that customer's credit account.
+- **Partial Payments & Credit Limits:** Automatically detects partial payments, recalculates historical credit vs. active pending balance, enforces per-customer credit limits (`LIMITE_EXCEDIDO`), and tracks overdue days (`VENCIDO`).
+- **Unified Multi-Sheet Workbook (`Aronium_Inventario_y_Cuentas_Credito.xlsx`):**
+  - `Resumen_Cuentas_Credito`: Consolidated customer ledger (Total Historical Credit, Total Paid, **Pending Balance**, Credit Limit, Available Credit, Overdue Days, Status, and Notes).
+  - `Detalle_Cuentas_Credito`: Invoice-by-invoice breakdown with itemized products, payment split, and combined notes.
+  - `Inventario`: Live catalog with SKU, Barcode, Category, Current Stock, Min Stock, Unit Cost, Sale Price, Total Valuation, Margin %, and Stock Status (`OK`, `STOCK_BAJO`, `AGOTADO`, `STOCK_NEGATIVO`).
+  - `Cliente_<Nombre>` tabs + `/AroniumUtility/Cuentas_Credito/Clientes/<Nombre_Cliente>.xlsx` and ready-to-share text statements.
 
 ### 2. Direct Google Drive & Sheets Web Authentication
-- Run `aronium-util drive login` from any Windows terminal (or pass `--web-login` to the installer).
-- Starts an embedded loopback OAuth 2.0 server (`http://127.0.0.1:8765`), launches your default browser to authenticate with Google, encrypts your OAuth token with **AES-256-GCM** (`gdrive.token.enc`), and updates your files in Google Drive API v3 using **stable `file_id`s** (so shared links on your phone never break) plus live cell batch updates via **Google Sheets API v4**.
-- Includes a persistent offline queue (`sync_outbox`) that stores updates locally if the store's internet drops and flushes them automatically upon reconnection with zero duplicates.
+- Click **"Autenticar Google Drive vía Web (OAuth 2.0)"** inside **Aronium Utility UI** or run `aronium-util drive login`.
+- Launches an embedded loopback OAuth 2.0 portal (`http://127.0.0.1:8765`), opens the system browser to authenticate with Google, encrypts your OAuth token with **AES-256-GCM** (`gdrive.token.enc`), and updates your files in Google Drive API v3 using **stable `file_id`s** plus live cell batch updates via **Google Sheets API v4**.
 
-### 3. Hot Encrypted Backups, Multi-Register Hub & Colombia DIAN Bridge
-- **Hot Online Backups (`aronium-util backup create|verify|restore`):** Uses SQLite's non-blocking online `VACUUM INTO` snapshot API, compresses to `.zip`, encrypts with **AES-256-GCM**, writes `.sha256` checksums, and verifies `PRAGMA integrity_check` and process status before restoring.
-- **Multi-Station Offline-First Hub (`aronium-util hub` & `aronium-util registers`):** Assigns unique register identities (`POS-01`, `POS-02`, `POS-ADMIN`), prevents duplicate identity conflicts (`TC-029`), consolidates multi-register sales, and audits simultaneous last-unit stock conflicts (`TC-021`) and concurrent catalog edits (`TC-022`).
-- **Colombia DIAN Electronic Invoicing (`aronium-util dian`):** Validates customer `CC`/`NIT`/Consumer Final (`222222222222`) and 5 UVT thresholds, computes official SHA-384 `CUFE`/`CUDE` hashes and QR URLs, archives UBL 2.1 XML & PDF artifacts to `/AroniumUtility/DIAN/YYYY-MM/`, and supports Credit Notes and offline contingency.
+### 3. Aronium Utility UI (`aronium-utility-ui.exe` / `aronium-util ui`)
+- **6 Visual Workspaces Powered by the Go CLI Sidecar:**
+  1. **Dashboard & Live Metrics:** Consolidated sales KPIs, active customer credit portfolio, inventory valuation, stock alerts, sales by cash register bar visualization, and top-selling products.
+  2. **Customer Credit Accounts Manager:** Clerk form to add annotations/payment commitments and credit limits with instant Google Drive sync, plus expandable customer transaction histories and statements.
+  3. **Live Inventory, Alerts & Kardex:** Searchable stock table with status filters and real-time Kardex movement viewer.
+  4. **Cash Register Comparison (`POS-01`, `POS-02`):** Per-register transaction counts, cash vs. credit sales, and average ticket metrics.
+  5. **Google Drive & Hot Backups:** 1-click Google Drive web login, instant table sync, and encrypted (`AES-256-GCM`) hot SQLite backup generator (`VACUUM INTO`).
+  6. **System Health Doctor & Auto-Start Service Control:** Live `PRAGMA quick_check` diagnostics and Windows boot startup registration.
 
 ---
 
-## Installation on Windows
+## Unified Installation on Windows (Installs CLI + UI + Boot Auto-Start)
 
-### Option A — 1-Click Native Windows Installer (`.exe` — Recommended)
+### Option A — 1-Click Unified Windows Installer (`.exe` — Recommended)
 
 1. Go to [**GitHub Releases (`latest`)**](https://github.com/SilverFeit/Aronium-Utility/releases/latest).
 2. Download **`aronium-util-setup-x64.exe`** *(or `aronium-util-setup-x86.exe` for 32-bit Windows POS terminals)*.
@@ -104,106 +117,62 @@ While **Aronium Lite** is fast, unlimited, and 100% offline at the checkout coun
    ```powershell
    .\aronium-util-setup-x64.exe
    ```
-   Or customize the cash register ID, store ID, background service, and immediate Google Drive Web login:
+   Or customize the cash register ID, store ID, and launch **Aronium Utility UI** immediately:
    ```powershell
-   .\aronium-util-setup-x64.exe --register POS-01 --store-id TIENDA-01 --install-service --web-login
+   .\aronium-util-setup-x64.exe --register POS-01 --store-id STORE-01 --launch-ui
    ```
 
-The installer automatically:
-- Installs `aronium-util.exe` into `%LOCALAPPDATA%\Programs\AroniumUtility\aronium-util.exe`.
-- Adds `%LOCALAPPDATA%\Programs\AroniumUtility` to your Windows User **`PATH`**.
-- Configures `ARONIUM_UTIL_HOME`, `ARONIUM_UTIL_CONFIG`, `ARONIUM_POS_DB`, `ARONIUM_STATE_DB`, `ARONIUM_STORE_ID`, and `ARONIUM_REGISTER_ID` in `HKCU\Environment`.
-- Initializes `%LOCALAPPDATA%\AroniumUtility\aronium-util.yaml` and `aronium_utility_state.db`.
+The unified installer automatically:
+- Installs **`aronium-util.exe`** (Go CLI Engine) and **`aronium-utility-ui.exe`** (Aronium Utility UI) into `%LOCALAPPDATA%\Programs\AroniumUtility\`.
+- Adds `%LOCALAPPDATA%\Programs\AroniumUtility` to your Windows User **`PATH`** and configures `ARONIUM_*` environment variables in `HKCU\Environment`.
+- Registers **`aronium-util.exe watch`** in Windows Startup (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` & Scheduled Tasks) so the CLI starts automatically as soon as the computer turns on.
+- Creates a Desktop shortcut for **Aronium Utility UI**.
 
 ### Option B — Portable `.zip` with `install.bat` / `install.ps1`
 
-1. Download **`Aronium-Utility-1.0.0-windows-x64.zip`** *(or `Aronium-Utility-1.0.0-windows-x86.zip`)*.
+1. Download **`Aronium-Utility-1.1.0-windows-x64.zip`** *(or `Aronium-Utility-1.1.0-windows-x86.zip`)*.
 2. Extract the archive and double-click **`install.bat`** *(or run `.\install.ps1` in PowerShell)*.
-
-### Option C — Build from Source
-
-Requires Go 1.22+ (`CGO_ENABLED=0` pure-Go SQLite via `modernc.org/sqlite`):
-
-```bash
-git clone https://github.com/SilverFeit/Aronium-Utility.git
-cd Aronium-Utility
-
-# Run the complete unit, BDD (Gherkin) & QA Matrix (TC-001..TC-030) test suite
-go test -v -race ./...
-
-# Cross-compile Windows x64, Windows x86, Native Setup Installers (.exe) & Release ZIPs
-./Scripts/package_release.sh
-```
 
 ---
 
-## Command-Line Interface (`aronium-util`)
+## Launching Aronium Utility UI & CLI Commands
 
 ```powershell
-# 1. Initialize configuration & auto-detect %LOCALAPPDATA%\Aronium\Data\pos.db
-aronium-util init --register POS-01 --store-id TIENDA-01 --store-name "Minimercado El Vecino"
+# Launch Aronium Utility UI (Tauri 2 + Svelte + TypeScript Desktop Interface)
+aronium-utility-ui
+# Or launch the UI directly from the CLI:
+aronium-util ui
 
-# 2. Authenticate directly with Google Drive & Google Sheets via Web Browser (OAuth 2.0)
+# Connect Google Drive & Google Sheets directly via Web Browser (OAuth 2.0)
 aronium-util drive login
 aronium-util drive status
 
-# 3. Run health diagnostics (read-only pos.db check, PRAGMA quick_check, schema version, register conflict check)
-aronium-util doctor
-
-# 4. Synchronize Inventory + Customer "Fiados" Accounts to Google Drive & Google Sheets immediately
+# Synchronize Inventory + Customer Credit Accounts to Google Drive & Sheets
 aronium-util sync
 
-# 5. Query Customer "Fiados", add payment commitment notes, set credit limits & generate WhatsApp statements
-aronium-util fiados list
-aronium-util fiados list --customer "Pedro" --overdue-days 15
-aronium-util fiados note add "Don Pedro Pérez" "Prometió pagar el viernes de quincena" --promise 2026-11-25
-aronium-util fiados limit 2 300000
-aronium-util fiados statement "Don Pedro Pérez"
+# Manage Customer Credit Accounts, add notes, set credit limits & generate statements
+aronium-util credit list
+aronium-util credit list --customer "Pedro"
+aronium-util credit note add "Pedro Pérez" "Compromiso de pago el viernes" --promise 2026-11-25
+aronium-util credit limit 2 50000
+aronium-util credit statement "Pedro Pérez"
 
-# 6. Query Live Inventory, Low/Negative Stock & Expiration Alerts, Kardex movements & Price Lists
+# Query Live Inventory, Stock/Expiration Alerts, Kardex & Price Lists
 aronium-util inventory list
 aronium-util inventory alerts --expire-days 15
 aronium-util inventory kardex
 aronium-util inventory pricelists --list-name Mayorista
 
-# 7. Run Real-Time Background Watcher or Install Native Windows Background Service
+# Health Diagnostics, Background Watcher & Windows Auto-Start Service
+aronium-util doctor
 aronium-util watch
 aronium-util service install
-aronium-util service start
 aronium-util service status
 
-# 8. Hot Encrypted SQLite Backups (VACUUM INTO + AES-256-GCM + SHA-256 + Safe Verified Restore)
-aronium-util backup create --passphrase "MiClaveSegura2026"
-aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium_backup_....db.zip.enc" --passphrase "MiClaveSegura2026"
-aronium-util backup restore --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium_backup_....db.zip.enc" --passphrase "MiClaveSegura2026"
-
-# 9. Multi-Register Traceability, Central Hub & Read-Only Admin Console (TUI + localhost:8080)
-aronium-util registers sales --filter-register POS-01 --from 2026-11-01
-aronium-util hub serve --addr 0.0.0.0:8443
-aronium-util admin --serve
-
-# 10. Multi-Engine Migration (SQL Server Express / PostgreSQL / CSV / JSON) & Colombia DIAN Electronic Invoicing
-aronium-util migrate export --format sqlserver
-aronium-util migrate checklist
-aronium-util reports daily
-aronium-util dian emit
-aronium-util dian list
+# Hot Encrypted SQLite Backups (VACUUM INTO + AES-256-GCM + SHA-256 + Verified Restore)
+aronium-util backup create --passphrase "MySecureKey2026"
+aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium_backup_....db.zip.enc" --passphrase "MySecureKey2026"
 ```
-
----
-
-## Architecture & Offline-First SQLite Safety
-
-<div align="center">
-<img src="docs/assets/sync-architecture.svg" alt="Aronium Utility — Offline-First Read-Only SQLite + Google Drive Sync Architecture" width="100%" />
-</div>
-
-1. **Strict Read-Only POS Adapter (`internal/db`):** Opens `pos.db` with `mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)` and exponential backoff retries (`db.WithRetry`). Never blocks the cashier or corrupts Aronium's in-memory product cache.
-2. **Independent WAL State Database (`aronium_utility_state.db`):** Stores checkpoints, enriched customer credit notes (`fiado_notes`), custom credit limits, Kardex history, expiration dates, differentiated price lists, offline outbox queue (`sync_outbox`), and DIAN fiscal lifecycle records.
-3. **Web OAuth 2.0 & Multi-Sheet `.xlsx` Engine (`internal/sync`):** Pure-Go OpenXML `.xlsx` generator and Google Drive v3 / Sheets v4 client with AES-256-GCM encrypted token vault (`gdrive.token.enc`).
-4. **Habeas Data & PII Masking (`internal/config`):** Masks customer tax IDs, phone numbers, and emails in diagnostic logs in compliance with Colombia Ley 1581 de 2012.
-
-Read the [**Step-by-Step User Guide (`docs/USER_GUIDE.md`)**](docs/USER_GUIDE.md), [**Technical & Functional Specification (`docs/SPEC.md`)**](docs/SPEC.md), and [**Changelog (`CHANGELOG.md`)**](CHANGELOG.md) for complete documentation.
 
 ---
 
@@ -212,28 +181,36 @@ Read the [**Step-by-Step User Guide (`docs/USER_GUIDE.md`)**](docs/USER_GUIDE.md
 ```text
 Aronium-Utility/
 ├── go.mod                               # Pure-Go module (modernc.org/sqlite + gopkg.in/yaml.v3 — zero CGO)
-├── VERSION                              # Single source of truth for release version (1.0.0)
+├── VERSION                              # Single source of truth for release version (1.1.0)
 ├── cmd/
-│   ├── aronium-util/                    # Main CLI & background service binary (`aronium-util.exe`)
-│   └── aronium-util-setup/              # Native Windows Setup Installer (`aronium-util-setup-x64.exe` / `x86.exe`)
+│   ├── aronium-util/                    # Main Go CLI & background startup watcher (`aronium-util.exe`)
+│   ├── aronium-utility-ui/              # Desktop UI executable (`aronium-utility-ui.exe`) consuming Go CLI sidecar
+│   └── aronium-util-setup/              # Unified Windows Setup Installer (`aronium-util-setup-x64.exe` / `x86.exe`)
+├── ui/                                  # Tauri 2 + Svelte 5 + TypeScript Desktop UI source
+│   ├── package.json                     # Svelte 5 + TypeScript + Vite + @tauri-apps/api
+│   ├── src/
+│   │   ├── App.svelte                   # 6-tab visual interface (Dashboard, Credit Accounts, Inventory, Registers, Drive, Doctor)
+│   │   ├── lib/ipc.ts                   # Tauri 2 IPC + Sidecar JSON adapter (0% duplicated business logic)
+│   │   └── lib/types.ts                 # TypeScript contracts matching aronium-util --json outputs
+│   └── src-tauri/                       # Tauri 2 Rust Core (`Cargo.toml`, `tauri.conf.json`, `src/lib.rs`)
 ├── internal/
 │   ├── config/                          # Declarative YAML config, AES-256-GCM secret vault & PII masking
 │   ├── db/                              # Strict read-only pos.db adapter, state DB migrations, ATTACH & doctor
 │   ├── events/                          # File-system + polling watcher, typed Event Bus & Webhook/Script hooks
-│   ├── service/                         # Windows service & scheduled startup task manager
-│   ├── fiados/                          # Customer credit detection, split payments, abonos, routing & statements
+│   ├── service/                         # Windows startup registry & background service manager
+│   ├── credit/                          # Customer credit detection, split payments, partial payments, routing & statements
 │   ├── inventory/                       # Live stock valuation, alerts, expirations, Kardex & price lists
 │   ├── sync/                            # Direct Web OAuth 2.0 login, OpenXML .xlsx builder, Drive v3 & Sheets v4
 │   ├── registers/                       # Cash register identity (POS-01, POS-02), conflict check & sales filter
 │   ├── hub/                             # Multi-station Central Hub, offline queue & TC-021/TC-022 conflict engine
-│   ├── admin/                           # Read-only Administrative Console (Terminal TUI + localhost:8080 web view)
+│   ├── admin/                           # Administrative Console snapshot engine (`--json`, TUI & localhost:8080)
 │   ├── backup/                          # Hot SQLite online backup (VACUUM INTO), AES-256-GCM & verified restore
 │   ├── migrate/                         # Multi-engine exporter (SQL Server, PostgreSQL, CSV, JSON) & MIG-004..006
-│   ├── reports/                         # Daily closing reports, Dual Currency (TRM) & ESC/POS printer router
-│   ├── dian/                            # Modular FiscalProvider & Colombia DIAN UBL 2.1 / CUFE SHA-384 adapter
+│   ├── reports/                         # Daily closing reports, Dual Currency & ESC/POS printer router
+│   ├── fiscal/                          # Modular FiscalProvider & UBL 2.1 electronic invoicing connector
 │   └── testutil/                        # Synthetic realistic pos.db generator for tests & demos
 ├── installer/                           # Companion 1-click install.bat, install.ps1 & uninstall.bat scripts
-├── Scripts/                             # Cross-platform Windows x64/x86 builder & release packager
+├── Scripts/                             # Svelte + Go cross-platform Windows x64/x86 builder & release packager
 ├── docs/                                # User Guide, Technical Specification (`SPEC.md`) & SVG diagrams
 └── tests/                               # Automated BDD (Gherkin) & QA Matrix (TC-001..TC-030) integration suite
 ```
@@ -250,6 +227,6 @@ Released under the [MIT License](LICENSE). Copyright © 2026 [SilverFeit](https:
 
 **Topics & Hashtags**
 
-`#Windows` `#Aronium` `#AroniumLite` `#POS` `#PointOfSale` `#Golang` `#SQLite` `#GoogleDrive` `#GoogleSheets` `#OAuth2` `#Fiados` `#InventoryManagement` `#Colombia` `#DIAN` `#ElectronicInvoicing` `#UBL21` `#OfflineFirst` `#RetailTech` `#CLI` `#OpenSource`
+`#Windows` `#Aronium` `#AroniumLite` `#POS` `#PointOfSale` `#Tauri` `#Tauri2` `#Svelte` `#TypeScript` `#Golang` `#SQLite` `#GoogleDrive` `#GoogleSheets` `#OAuth2` `#InventoryManagement` `#CreditAccounts` `#UBL21` `#OfflineFirst` `#CLI` `#OpenSource`
 
 </div>

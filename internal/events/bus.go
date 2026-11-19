@@ -120,7 +120,7 @@ func (b *Bus) hooksForEvent(t EventType) []string {
 	case EventSaleCreated:
 		return b.hooks.OnSale
 	case EventCreditAccountUpdated:
-		return b.hooks.OnFiado
+		return b.hooks.OnCreditAccount
 	case EventLowStockAlert, EventStockChanged:
 		return b.hooks.OnLowStock
 	case EventDayClose:
@@ -183,7 +183,7 @@ func NewWatcher(cfg *config.Config, posDB, stateDB *sql.DB, bus *Bus) *Watcher {
 		deb = 500 * time.Millisecond
 	}
 	ct := make(map[string]bool)
-	for _, t := range cfg.Fiados.CreditPaymentTypes {
+	for _, t := range cfg.Credit.CreditPaymentTypes {
 		ct[strings.ToLower(strings.TrimSpace(t))] = true
 	}
 	return &Watcher{
@@ -231,17 +231,17 @@ func (w *Watcher) PollOnce(ctx context.Context) (int, error) {
 			w.Bus.Publish(ctx, evSale)
 			emitted++
 
-			// Check if document is a Fiado (unpaid or credit payment type or split payment balance > 0)
-			if w.isDocumentFiado(doc) {
-				evFiado := Event{
-					ID:             fmt.Sprintf("fiado-%d-%d", doc.ID, time.Now().UnixNano()),
+			// Check if document is a customer credit account transaction (unpaid or credit payment type or split payment balance > 0)
+			if w.isDocumentCredit(doc) {
+				evCredit := Event{
+					ID:             fmt.Sprintf("credit-%d-%d", doc.ID, time.Now().UnixNano()),
 					Type:           EventCreditAccountUpdated,
 					StoreID:        w.StoreID,
 					CashRegisterID: w.RegisterID,
 					TimestampUTC:   time.Now().UTC(),
 					Document:       &doc,
 				}
-				w.Bus.Publish(ctx, evFiado)
+				w.Bus.Publish(ctx, evCredit)
 				emitted++
 			}
 		}
@@ -304,14 +304,14 @@ func (w *Watcher) PollOnce(ctx context.Context) (int, error) {
 	return emitted, nil
 }
 
-func (w *Watcher) isDocumentFiado(doc db.Document) bool {
+func (w *Watcher) isDocumentCredit(doc db.Document) bool {
 	if doc.PaidStatus == 0 {
 		return true
 	}
 	var effectivePaid float64
 	for _, p := range doc.Payments {
 		nameLower := strings.ToLower(strings.TrimSpace(p.PaymentTypeName))
-		if w.CreditTypes[nameLower] || !p.MarkAsPaid || strings.Contains(nameLower, "fiado") || strings.Contains(nameLower, "crédito") || strings.Contains(nameLower, "credito") {
+		if w.CreditTypes[nameLower] || !p.MarkAsPaid || strings.Contains(nameLower, "crédito") || strings.Contains(nameLower, "credito") || strings.Contains(nameLower, "credit") || strings.Contains(nameLower, "cuenta") {
 			return true
 		}
 		effectivePaid += p.Amount

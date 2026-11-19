@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
+	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
-	"github.com/SilverFeit/Aronium-Utility/internal/fiados"
 	"github.com/SilverFeit/Aronium-Utility/internal/inventory"
 )
 
@@ -438,10 +438,10 @@ func sanitizeFileName(name string) string {
 	return clean
 }
 
-// SyncAll synchronizes Live Inventory + Customer "Fiados" Accounts into:
-// 1. Atomic Local Google Drive folder hierarchy (/AroniumUtility/Aronium_Inventario_y_Fiados.xlsx + /Inventario/ + /Fiados/Clientes/<Cliente>.xlsx)
+// SyncAll synchronizes Live Inventory + Customer Credit Accounts into:
+// 1. Atomic Local Google Drive folder hierarchy (/AroniumUtility/Aronium_Inventario_y_Cuentas_Credito.xlsx + /Inventario/ + /Cuentas_Credito/Clientes/<Cliente>.xlsx)
 // 2. Google Drive API v3 (preserving stable file_id per file)
-// 3. Google Sheets API v4 (Resumen_Fiados, Detalle_Fiados, Inventario, and Customer tabs)
+// 3. Google Sheets API v4 (Resumen_Cuentas_Credito, Detalle_Cuentas_Credito, Inventario, and Customer tabs)
 // 4. Offline Outbox Queue if network is down (TODO-026, TODO-027, TODO-028).
 func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	invEngine := inventory.NewEngine(m.Cfg, m.PosDB, m.StateDB)
@@ -451,18 +451,18 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	}
 	_, _ = invEngine.SyncKardexFromDocuments()
 
-	fiadosEngine := fiados.NewEngine(m.Cfg, m.PosDB, m.StateDB)
-	ledgerReport, err := fiadosEngine.BuildLedger("", 0)
+	creditEngine := credit.NewEngine(m.Cfg, m.PosDB, m.StateDB)
+	ledgerReport, err := creditEngine.BuildLedger("", 0)
 	if err != nil {
-		return nil, fmt.Errorf("fiados ledger build failed: %w", err)
+		return nil, fmt.Errorf("credit ledger build failed: %w", err)
 	}
 
 	syncRoot := filepath.Join(m.Cfg.GoogleDrive.LocalDriveSyncDir, m.Cfg.GoogleDrive.RootFolderName)
 	invDir := filepath.Join(syncRoot, "Inventario")
-	fiadosDir := filepath.Join(syncRoot, "Fiados")
-	clientesDir := filepath.Join(fiadosDir, "Clientes")
+	creditDir := filepath.Join(syncRoot, "Cuentas_Credito")
+	clientesDir := filepath.Join(creditDir, "Clientes")
 
-	for _, dir := range []string{syncRoot, invDir, fiadosDir, clientesDir} {
+	for _, dir := range []string{syncRoot, invDir, creditDir, clientesDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, err
 		}
@@ -473,7 +473,7 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 		UploadedDriveIDs: make(map[string]string),
 	}
 
-	// 1. Build & write Master Unified Table (Aronium_Inventario_y_Fiados.xlsx)
+	// 1. Build & write Master Unified Table (Aronium_Inventario_y_Cuentas_Credito.xlsx)
 	masterSheets := BuildMasterWorkbookSheets(invReport, ledgerReport, m.Cfg.GoogleDrive.PerCustomerSheets)
 	masterBytes, err := BuildXLSXBytes(masterSheets)
 	if err != nil {
@@ -481,7 +481,7 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	}
 	workbookName := m.Cfg.GoogleDrive.MasterWorkbookName
 	if workbookName == "" {
-		workbookName = "Aronium_Inventario_y_Fiados.xlsx"
+		workbookName = "Aronium_Inventario_y_Cuentas_Credito.xlsx"
 	}
 	masterPath := filepath.Join(syncRoot, workbookName)
 	if err := WriteAtomicFile(masterPath, masterBytes); err != nil {
@@ -501,13 +501,13 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 		res.InventoryFiles = append(res.InventoryFiles, invCSVPath)
 	}
 
-	// 3. Write Resumen_Fiados.csv & Detalle_Fiados.csv
-	resumenCSVPath := filepath.Join(fiadosDir, "Resumen_Fiados.csv")
+	// 3. Write Resumen_Cuentas_Credito.csv & Detalle_Cuentas_Credito.csv
+	resumenCSVPath := filepath.Join(creditDir, "Resumen_Cuentas_Credito.csv")
 	_ = writeCSVAtomic(resumenCSVPath, masterSheets[0].Rows)
-	detalleCSVPath := filepath.Join(fiadosDir, "Detalle_Fiados.csv")
+	detalleCSVPath := filepath.Join(creditDir, "Detalle_Cuentas_Credito.csv")
 	_ = writeCSVAtomic(detalleCSVPath, masterSheets[1].Rows)
 
-	// 4. Route & write individual Customer Account files (/AroniumUtility/Fiados/Clientes/<Nombre_Cliente>.xlsx, .csv, _Estado_Cuenta.txt) (TODO-018, TODO-026)
+	// 4. Route & write individual Customer Account files (/AroniumUtility/Cuentas_Credito/Clientes/<Nombre_Cliente>.xlsx, .csv, _Estado_Cuenta.txt) (TODO-018, TODO-026)
 	type uploadTarget struct {
 		LogicalPath string
 		LocalPath   string
@@ -532,7 +532,7 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 			if err := WriteAtomicFile(custXLSXPath, custXLSXBytes); err == nil {
 				res.CustomerFiles = append(res.CustomerFiles, custXLSXPath)
 				uploads = append(uploads, uploadTarget{
-					LogicalPath: fmt.Sprintf("/%s/Fiados/Clientes/%s.xlsx", m.Cfg.GoogleDrive.RootFolderName, safeName),
+					LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/Clientes/%s.xlsx", m.Cfg.GoogleDrive.RootFolderName, safeName),
 					LocalPath:   custXLSXPath,
 					MimeType:    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 					Content:     custXLSXBytes,
@@ -543,7 +543,7 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 		custCSVPath := filepath.Join(clientesDir, safeName+".csv")
 		_ = writeCSVAtomic(custCSVPath, custRows)
 
-		stmtText := fiados.GenerateStatement(acc, m.Cfg.StoreName, m.Cfg.Inventory.DualCurrencyCode, m.Cfg.Inventory.DualCurrencyRate)
+		stmtText := credit.GenerateStatement(acc, m.Cfg.StoreName, m.Cfg.Inventory.DualCurrencyCode, m.Cfg.Inventory.DualCurrencyRate)
 		stmtPath := filepath.Join(clientesDir, safeName+"_Estado_Cuenta.txt")
 		_ = WriteAtomicFile(stmtPath, []byte(stmtText))
 	}
@@ -669,7 +669,7 @@ func (m *DriveManager) UploadFileToDrive(ctx context.Context, accessToken, fileN
 	return parsed.ID, nil
 }
 
-// UpdateGoogleSheet pushes structured tabs (Resumen_Fiados, Detalle_Fiados, Inventario, and customer tabs) via Google Sheets API v4 (TODO-027).
+// UpdateGoogleSheet pushes structured tabs (Resumen_Cuentas_Credito, Detalle_Cuentas_Credito, Inventario, and customer tabs) via Google Sheets API v4 (TODO-027).
 func (m *DriveManager) UpdateGoogleSheet(ctx context.Context, accessToken, spreadsheetID string, sheets []SheetData) error {
 	type valueRange struct {
 		Range  string     `json:"range"`
@@ -782,9 +782,9 @@ func webAuthPortalHTML(clientID, redirectURI, state string) string {
 </head>
 <body>
 <div class="card">
-  <span class="badge">Aronium Utility v1.0 — Sincronizador de Inventario y Fiados</span>
+  <span class="badge">Aronium Utility v1.0 — Sincronizador de Inventario y Cuentas de Crédito</span>
   <h1>Conectar Google Drive y Google Sheets</h1>
-  <p>Vincula tu cuenta de Google para sincronizar automáticamente la tabla de <strong>Inventario Vivo</strong> y las cuentas de <strong>"Fiado" por Cliente</strong> cada vez que pases una venta en Aronium Lite.</p>
+  <p>Vincula tu cuenta de Google para sincronizar automáticamente la tabla de <strong>Inventario Vivo</strong> y las <strong>Cuentas de Crédito por Cliente</strong> cada vez que registres una venta en Aronium Lite.</p>
 
   <form method="POST" action="/oauth2/start">
     <label>Opción A — Flujo OAuth 2.0 Web Oficial de Google Cloud</label>

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,10 +19,10 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/admin"
 	"github.com/SilverFeit/Aronium-Utility/internal/backup"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
+	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
-	"github.com/SilverFeit/Aronium-Utility/internal/dian"
 	"github.com/SilverFeit/Aronium-Utility/internal/events"
-	"github.com/SilverFeit/Aronium-Utility/internal/fiados"
+	"github.com/SilverFeit/Aronium-Utility/internal/fiscal"
 	"github.com/SilverFeit/Aronium-Utility/internal/hub"
 	"github.com/SilverFeit/Aronium-Utility/internal/inventory"
 	"github.com/SilverFeit/Aronium-Utility/internal/migrate"
@@ -31,7 +33,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
 )
 
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -51,11 +53,13 @@ func run(args []string) error {
 
 	switch cmd {
 	case "version", "--version", "-v":
-		fmt.Printf("aronium-util v%s (Open Source MIT — Windows POS Companion for Aronium Lite)\n", Version)
+		fmt.Printf("aronium-util v%s (Open Source MIT — Windows POS Companion & CLI Engine for Aronium Lite)\n", Version)
 		return nil
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
+	case "ui", "gui":
+		return runUI(subArgs)
 	case "init":
 		return runInit(subArgs)
 	case "doctor":
@@ -66,8 +70,8 @@ func run(args []string) error {
 		return runWatch(subArgs)
 	case "service":
 		return runService(subArgs)
-	case "fiados":
-		return runFiados(subArgs)
+	case "credit", "accounts", "cartera":
+		return runCredit(subArgs)
 	case "inventory":
 		return runInventory(subArgs)
 	case "registers":
@@ -82,8 +86,8 @@ func run(args []string) error {
 		return runMigrate(subArgs)
 	case "reports":
 		return runReports(subArgs)
-	case "dian":
-		return runDIAN(subArgs)
+	case "fiscal":
+		return runFiscal(subArgs)
 	case "admin":
 		return runAdmin(subArgs)
 	case "demo-db", "test-fixture":
@@ -94,35 +98,37 @@ func run(args []string) error {
 }
 
 func printUsage() {
-	fmt.Printf(`Aronium Utility v%s — CLI Open Source (MIT) para Aronium Lite (Windows / SQLite pos.db)
+	fmt.Printf(`Aronium Utility v%s — CLI Open Source (MIT) & Motor Local para Aronium Utility UI (Tauri 2 + Svelte + TS)
 
 USO:
   aronium-util <comando> [subcomando] [opciones]
 
 COMANDOS PRINCIPALES:
-  init        Configura aronium-util.yaml (autodetecta pos.db, ID de caja POS-01, Google Drive, Hub y DIAN)
+  ui          Lanza la aplicación gráfica de escritorio "Aronium Utility UI" (Tauri 2 + Svelte + TypeScript)
+  init        Configura aronium-util.yaml (autodetecta pos.db, ID de caja POS-01, Google Drive, Hub y Facturación)
   doctor      Diagnóstico de salud (pos.db solo lectura, PRAGMA quick_check, esquema, credenciales, cajas)
   drive       Conexión directa a Google Drive & Google Sheets con autenticación vía Web (login, sync, status)
-  watch       Demonio en paralelo que detecta ventas/fiados/inventario en tiempo real y sincroniza a Drive
-  service     Instala, inicia, detiene y consulta el servicio de Windows en segundo plano
-  fiados      Gestiona cuentas de "Fiado" por cliente, abonos, notas, cupos y estados de cuenta
+  watch       Demonio en vivo que se inicia al encender el equipo y procesa transacciones sobre pos.db
+  service     Registra, inicia, detiene y consulta el servicio de inicio automático en Windows
+  credit      Gestiona cuentas de crédito por cliente, pagos parciales, notas, límites y estados de cuenta
   inventory   Consulta inventario vivo, valorización, alertas de stock bajo/vencimiento, kardex y listas de precio
   registers   Gestión de identidad de cajas (POS-01, POS-02), prevención de conflictos y ventas por estación
-  sync        Sincronización inmediata de Tabla de Inventario + Cuentas de Fiados hacia Google Drive / Sheets
+  sync        Sincronización inmediata de Tabla de Inventario + Cuentas de Crédito hacia Google Drive / Sheets
   hub         Servidor Central Multi-Estación Offline-First (serve, status, discover)
   backup      Respaldos en caliente (SQLite Online Snapshot), cifrado AES-256-GCM, rotación y restauración
   migrate     Exportación (JSON, CSV, PostgreSQL, SQL Server Express) y verificador post-migración (MIG-004..006)
-  reports     Cierres diarios, moneda dual (TRM COP/USD), envío por correo/Telegram/Drive y comandas ESC/POS
-  dian        Conector Fiscal Modular Colombia (Factura Electrónica / POS Electrónico UBL 2.1, CUFE, QR, Contingencia)
-  admin       Consola administrativa (TUI en terminal y panel web local de solo lectura en localhost:8080)
+  reports     Cierres diarios, moneda dual, envío por correo/Telegram/Drive y comandas ESC/POS
+  fiscal      Conector de Facturación Electrónica Modular UBL 2.1 (emit, list, credit-note)
+  admin       Consola administrativa (TUI en terminal, --json para UI y servidor local en localhost:8080)
   demo-db     Genera una base pos.db sintética realista para pruebas inmediatas
 
 EJEMPLOS RÁPIDOS:
+  aronium-util ui
   aronium-util init --pos-db "C:\Users\Caja\AppData\Local\Aronium\Data\pos.db" --register POS-01
   aronium-util drive login
   aronium-util sync
-  aronium-util fiados list --customer "Pedro"
-  aronium-util fiados note add "Don Pedro Pérez" "Prometió pagar el viernes"
+  aronium-util credit list --customer "Pedro"
+  aronium-util credit note add "Pedro Pérez" "Compromiso de pago viernes"
   aronium-util watch
 `, Version)
 }
@@ -155,12 +161,54 @@ func loadConfigWithFlags(fs *flag.FlagSet, args []string) (*config.Config, strin
 	return cfg, resolvedPath, nil
 }
 
+// 0. ui (Launches Aronium Utility UI executable - Tauri 2 + Svelte + TypeScript)
+func runUI(args []string) error {
+	uiBin := os.Getenv("ARONIUM_UI_BIN")
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+
+	uiNames := []string{"aronium-utility-ui", "Aronium Utility UI"}
+	if runtime.GOOS == "windows" {
+		uiNames = []string{"aronium-utility-ui.exe", "Aronium Utility UI.exe"}
+	}
+
+	var candidates []string
+	if uiBin != "" {
+		candidates = append(candidates, uiBin)
+	}
+	for _, n := range uiNames {
+		candidates = append(candidates,
+			filepath.Join(exeDir, n),
+			filepath.Join(".", n),
+			filepath.Join(".", "dist", "bin", n),
+		)
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			candidates = append(candidates, filepath.Join(localAppData, "Programs", "AroniumUtility", n))
+		}
+	}
+
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			cmd := exec.Command(c, args...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("error iniciando Aronium Utility UI (%s): %w", c, err)
+			}
+			fmt.Printf("[✓] Aronium Utility UI iniciada (PID %d): %s\n", cmd.Process.Pid, c)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("no se encontró el ejecutable 'aronium-utility-ui'. Asegúrate de haber ejecutado el instalador o compilado la UI")
+}
+
 // 1. init (TODO-007)
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "Ruta donde guardar aronium-util.yaml")
 	posDB := fs.String("pos-db", "", "Ruta a pos.db (autodetecta %LOCALAPPDATA%\\Aronium\\Data\\pos.db)")
-	storeID := fs.String("store-id", "TIENDA-01", "Identificador de la tienda o sede")
+	storeID := fs.String("store-id", "STORE-01", "Identificador de la tienda o sede")
 	storeName := fs.String("store-name", "Mi Comercio Aronium", "Nombre comercial de la tienda")
 	registerID := fs.String("register", "POS-01", "ID único de la caja registradora (ej. POS-01)")
 	driveDir := fs.String("drive-dir", "", "Carpeta local de sincronización de Google Drive")
@@ -168,6 +216,7 @@ func runInit(args []string) error {
 	sheetID := fs.String("gsheet-id", "", "ID de hoja de Google Sheets maestra (opcional)")
 	webLogin := fs.Bool("web-login", false, "Iniciar autenticación web con Google Drive inmediatamente")
 	createDemoIfMissing := fs.Bool("create-demo-if-missing", false, "Crear pos.db de demostración si no existe aún")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -194,7 +243,6 @@ func runInit(args []string) error {
 			if err := testutil.CreateSyntheticPosDB(cfg.PosDBPath); err != nil {
 				return fmt.Errorf("no se pudo crear pos.db demo: %w", err)
 			}
-			fmt.Printf("[✓] Base de datos pos.db sintética creada en: %s\n", cfg.PosDBPath)
 		}
 	}
 
@@ -206,7 +254,6 @@ func runInit(args []string) error {
 		return err
 	}
 
-	// Initialize state DB & claim register identity
 	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
 	if err != nil {
 		return err
@@ -214,6 +261,10 @@ func runInit(args []string) error {
 	defer stateConn.Close()
 	regMgr := registers.NewManager(nil, stateConn, cfg.StoreID)
 	_, _ = regMgr.ClaimIdentity(cfg.CashRegisterID, cfg.CashRegisterName, "", true)
+
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(cfg)
+	}
 
 	fmt.Printf("[✓] Configuración inicializada en: %s\n", targetCfgPath)
 	fmt.Printf("    • Comercio:          %s (%s)\n", cfg.StoreName, cfg.StoreID)
@@ -282,6 +333,7 @@ func runDrive(args []string) error {
 	clientSecret := fs.String("client-secret", "", "Google Cloud OAuth 2.0 Client Secret")
 	timeoutSec := fs.Int("timeout", 180, "Tiempo máximo de espera para autenticación web (segundos)")
 	noBrowser := fs.Bool("no-browser", false, "No abrir el navegador automáticamente (mostrar URL en consola)")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, cfgPath, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -293,9 +345,6 @@ func runDrive(args []string) error {
 	}
 	defer stateConn.Close()
 
-	var posConn * (db.Customer)
-	_ = posConn
-
 	switch sub {
 	case "login", "connect", "auth", "web":
 		mgr := sync.NewDriveManager(cfg, nil, stateConn)
@@ -306,34 +355,50 @@ func runDrive(args []string) error {
 		if port <= 0 {
 			port = 8765
 		}
-		fmt.Println("======================================================================")
-		fmt.Println("  CONEXIÓN DIRECTA A GOOGLE DRIVE & SHEETS (AUTENTICACIÓN VÍA WEB)")
-		fmt.Println("======================================================================")
-		fmt.Printf("Iniciando portal local de autenticación OAuth 2.0 en http://127.0.0.1:%d ...\n", port)
-		fmt.Println("Se abrirá tu navegador web para vincular tu cuenta de Google Drive.")
-		fmt.Println("Desde allí podrás autorizar el acceso para guardar automáticamente:")
-		fmt.Println("  1. La tabla maestra de Inventario Vivo y Cuentas de Fiados.")
-		fmt.Println("  2. La cuenta individual de cada cliente cuando pases una factura a su nombre.")
-		fmt.Println("----------------------------------------------------------------------")
+		if !*jsonOut {
+			fmt.Println("======================================================================")
+			fmt.Println("  CONEXIÓN DIRECTA A GOOGLE DRIVE & SHEETS (AUTENTICACIÓN VÍA WEB)")
+			fmt.Println("======================================================================")
+			fmt.Printf("Iniciando portal local de autenticación OAuth 2.0 en http://127.0.0.1:%d ...\n", port)
+		}
 
 		tok, urlUsed, err := mgr.AuthenticateViaWeb(ctx, *clientID, *clientSecret, !*noBrowser)
 		if err != nil {
 			return fmt.Errorf("autenticación web cancelada o expirada (%s): %w", urlUsed, err)
 		}
 		_ = cfg.Save(cfgPath)
-		fmt.Printf("[✓] ¡Google Drive conectado exitosamente! (Token cifrado en %s)\n", cfg.GoogleDrive.TokenVaultPath)
-		if tok.AccountEmail != "" {
-			fmt.Printf("    Cuenta vinculada: %s\n", config.MaskEmail(tok.AccountEmail))
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"connected":     true,
+				"account_email": config.MaskEmail(tok.AccountEmail),
+				"expiry":        tok.Expiry,
+				"vault_path":    cfg.GoogleDrive.TokenVaultPath,
+			})
 		}
+		fmt.Printf("[✓] ¡Google Drive conectado exitosamente! (Token cifrado en %s)\n", cfg.GoogleDrive.TokenVaultPath)
 		return nil
 
 	case "status":
 		mgr := sync.NewDriveManager(cfg, nil, stateConn)
 		tok, err := mgr.LoadToken()
+		syncDir := filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName)
+		if *jsonOut {
+			statusMap := map[string]any{
+				"connected":            err == nil && tok != nil && tok.AccessToken != "",
+				"sync_dir":             syncDir,
+				"master_workbook_name": cfg.GoogleDrive.MasterWorkbookName,
+				"spreadsheet_id":       cfg.GoogleDrive.MasterSpreadsheetID,
+			}
+			if err == nil && tok != nil {
+				statusMap["account_email"] = config.MaskEmail(tok.AccountEmail)
+				statusMap["expiry"] = tok.Expiry
+			}
+			return json.NewEncoder(os.Stdout).Encode(statusMap)
+		}
 		fmt.Println("======================================================================")
 		fmt.Println("  ESTADO DE CONEXIÓN CON GOOGLE DRIVE / GOOGLE SHEETS")
 		fmt.Println("======================================================================")
-		fmt.Printf("Carpeta Sincronizada: %s\n", filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName))
+		fmt.Printf("Carpeta Sincronizada: %s\n", syncDir)
 		fmt.Printf("Tabla Maestra (.xlsx): %s\n", cfg.GoogleDrive.MasterWorkbookName)
 		if err != nil {
 			fmt.Println("Token OAuth 2.0 Web:   NO VINCULADO (Ejecuta 'aronium-util drive login' para autenticar vía web)")
@@ -386,10 +451,10 @@ func runSync(args []string) error {
 		return enc.Encode(res)
 	}
 
-	fmt.Println("[✓] Sincronización de Inventario y Cuentas de Fiados completada:")
+	fmt.Println("[✓] Sincronización de Inventario y Cuentas de Crédito completada:")
 	fmt.Printf("    • Tabla Maestra Unificada: %s\n", res.MasterWorkbookPath)
 	fmt.Printf("    • Archivos de Inventario:  %d actualizados\n", len(res.InventoryFiles))
-	fmt.Printf("    • Cuentas de Clientes:     %d fichas de clientes enrutadas a /Fiados/Clientes/\n", len(res.CustomerFiles))
+	fmt.Printf("    • Cuentas de Clientes:     %d fichas de clientes enrutadas a /Cuentas_Credito/Clientes/\n", len(res.CustomerFiles))
 	if len(res.UploadedDriveIDs) > 0 {
 		fmt.Printf("    • Google Drive API v3:     %d archivos sincronizados en la nube\n", len(res.UploadedDriveIDs))
 	}
@@ -431,7 +496,7 @@ func runWatch(args []string) error {
 	driveMgr := sync.NewDriveManager(cfg, posConn, stateConn)
 	hostname, _ := os.Hostname()
 	hubClient := hub.NewClient(cfg.Hub.ServerURL, config.LoadSecret("hub_api_token", "ARONIUM_HUB_TOKEN"), cfg.StoreID, cfg.CashRegisterID, hostname, stateConn)
-	dianProv := dian.NewColombiaDIANProvider(cfg, stateConn)
+	fiscalProv := fiscal.NewStandardUBLProvider(cfg, stateConn)
 
 	bus.SubscribeAll(func(ctx context.Context, ev events.Event) error {
 		fmt.Printf("[%s] Evento detectado en %s: %s (ID=%s)\n",
@@ -445,8 +510,8 @@ func runWatch(args []string) error {
 		if cfg.Watch.AutoSyncHub && cfg.Hub.Enabled && ev.Document != nil && ev.Type == events.EventSaleCreated {
 			_, _ = hubClient.SubmitSale(ctx, *ev.Document)
 		}
-		if cfg.Watch.AutoEmitDIAN && cfg.DIAN.Enabled && ev.Document != nil && ev.Type == events.EventSaleCreated {
-			_, _ = dianProv.SubmitDocument(ctx, *ev.Document)
+		if cfg.Watch.AutoEmitFiscal && cfg.Fiscal.Enabled && ev.Document != nil && ev.Type == events.EventSaleCreated {
+			_, _ = fiscalProv.SubmitDocument(ctx, *ev.Document)
 		}
 		return nil
 	})
@@ -457,7 +522,6 @@ func runWatch(args []string) error {
 		if err != nil {
 			return err
 		}
-		// Always ensure Drive files are up-to-date on --once
 		_, err = driveMgr.SyncAll(context.Background())
 		fmt.Printf("[✓] Ciclo watch --once completado (%d eventos nuevos emitidos).\n", count)
 		return err
@@ -465,7 +529,7 @@ func runWatch(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("[*] Aronium Utility Watcher iniciado en paralelo sobre %s (Caja: %s)...\n", cfg.PosDBPath, cfg.CashRegisterID)
+	fmt.Printf("[*] Aronium Utility Watcher iniciado en vivo sobre %s (Caja: %s)...\n", cfg.PosDBPath, cfg.CashRegisterID)
 	err = watcher.Run(ctx)
 	if err == context.Canceled {
 		return nil
@@ -482,6 +546,7 @@ func runService(args []string) error {
 	}
 	fs := flag.NewFlagSet("service", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "Ruta a aronium-util.yaml")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -493,11 +558,17 @@ func runService(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"action": "install", "result": msg})
+		}
 		fmt.Println("[✓]", msg)
 	case "start":
 		msg, err := mgr.Start()
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"action": "start", "result": msg})
 		}
 		fmt.Println("[✓]", msg)
 	case "stop":
@@ -505,13 +576,23 @@ func runService(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"action": "stop", "result": msg})
+		}
 		fmt.Println("[✓]", msg)
 	case "status":
-		fmt.Println("Estado del servicio:", mgr.Status())
+		st := mgr.Status()
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": st, "log_path": mgr.LogPath})
+		}
+		fmt.Println("Estado del servicio:", st)
 	case "logs":
 		logs, err := mgr.Logs(8192)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"logs": logs})
 		}
 		fmt.Println(logs)
 	default:
@@ -520,8 +601,8 @@ func runService(args []string) error {
 	return nil
 }
 
-// 7. fiados (TODO-017..021)
-func runFiados(args []string) error {
+// 7. credit (TODO-017..021 — Customer Credit Accounts, Notes, Limits & Statements)
+func runCredit(args []string) error {
 	sub := "list"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub = strings.ToLower(args[0])
@@ -530,9 +611,9 @@ func runFiados(args []string) error {
 
 	switch sub {
 	case "list":
-		fs := flag.NewFlagSet("fiados list", flag.ContinueOnError)
+		fs := flag.NewFlagSet("credit list", flag.ContinueOnError)
 		customer := fs.String("customer", "", "Filtrar por nombre o ID de cliente")
-		overdueDays := fs.Int("overdue-days", 0, "Filtrar clientes con mora mayor o igual a N días")
+		overdueDays := fs.Int("overdue-days", 0, "Filtrar clientes con vencimiento mayor o igual a N días")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
@@ -549,7 +630,7 @@ func runFiados(args []string) error {
 		}
 		defer stateConn.Close()
 
-		eng := fiados.NewEngine(cfg, posConn, stateConn)
+		eng := credit.NewEngine(cfg, posConn, stateConn)
 		rep, err := eng.BuildLedger(*customer, *overdueDays)
 		if err != nil {
 			return err
@@ -561,13 +642,13 @@ func runFiados(args []string) error {
 		}
 
 		fmt.Println("================================================================================")
-		fmt.Printf("  CARTERA DE FIADOS (CUENTAS POR COBRAR) — %s (%s)\n", cfg.StoreName, cfg.CashRegisterID)
-		fmt.Printf("  Deuda Total Pendiente: $%.2f COP | Clientes con Saldo: %d | Cupo Excedido: %d\n",
+		fmt.Printf("  CUENTAS DE CRÉDITO DE CLIENTES (CUENTAS POR COBRAR) — %s (%s)\n", cfg.StoreName, cfg.CashRegisterID)
+		fmt.Printf("  Saldo Total Pendiente: $%.2f | Clientes con Saldo: %d | Límite Excedido: %d\n",
 			rep.TotalPendingPortfolio, rep.ActiveDebtorCount, rep.OverLimitCount)
 		fmt.Println("================================================================================")
 		for _, acc := range rep.Accounts {
-			fmt.Printf("• %-26s | Fiado: $%-10.2f | Abonado: $%-10.2f | SALDO: $%-10.2f | [%s]\n",
-				acc.CustomerName, acc.TotalCreditIssued, acc.TotalAbonosPaid, acc.PendingBalance, acc.AccountStatus)
+			fmt.Printf("• %-26s | Crédito: $%-10.2f | Pagado: $%-10.2f | SALDO: $%-10.2f | [%s]\n",
+				acc.CustomerName, acc.TotalCreditIssued, acc.TotalPaymentsPaid, acc.PendingBalance, acc.AccountStatus)
 			for _, tx := range acc.Transactions {
 				fmt.Printf("    -> [%s] Factura #%s | %s | Saldo: $%.2f\n",
 					tx.Date, tx.DocumentNumber, tx.ItemsSummary, tx.PendingBalance)
@@ -582,15 +663,16 @@ func runFiados(args []string) error {
 		if len(args) > 0 && strings.ToLower(args[0]) == "add" {
 			args = args[1:]
 		}
-		fs := flag.NewFlagSet("fiados note add", flag.ContinueOnError)
+		fs := flag.NewFlagSet("credit note add", flag.ContinueOnError)
 		promise := fs.String("promise", "", "Fecha de compromiso de pago (YYYY-MM-DD)")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
 		}
 		rem := fs.Args()
 		if len(rem) < 2 {
-			return fmt.Errorf("uso: aronium-util fiados note add <cliente_o_documento> \"<nota>\"")
+			return fmt.Errorf("uso: aronium-util credit note add <cliente_o_documento> \"<nota>\"")
 		}
 		target := rem[0]
 		noteText := strings.Join(rem[1:], " ")
@@ -601,7 +683,7 @@ func runFiados(args []string) error {
 		}
 		defer stateConn.Close()
 
-		note := db.FiadoNote{
+		note := db.CreditNote{
 			CustomerName: target,
 			Note:         noteText,
 			DuePromise:   *promise,
@@ -610,22 +692,27 @@ func runFiados(args []string) error {
 		if idNum, err := strconv.ParseInt(target, 10, 64); err == nil {
 			note.CustomerID = idNum
 		}
-		id, err := db.AddFiadoNote(stateConn, note)
+		id, err := db.AddCreditNote(stateConn, note)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("[✓] Anotación de fiado #%d guardada en aronium_utility_state.db para '%s': %s\n", id, target, noteText)
+		note.ID = id
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(note)
+		}
+		fmt.Printf("[✓] Anotación de cuenta #%d guardada en aronium_utility_state.db para '%s': %s\n", id, target, noteText)
 		return nil
 
 	case "limit":
-		fs := flag.NewFlagSet("fiados limit", flag.ContinueOnError)
+		fs := flag.NewFlagSet("credit limit", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
 		}
 		rem := fs.Args()
 		if len(rem) < 2 {
-			return fmt.Errorf("uso: aronium-util fiados limit <id_cliente> <monto_cupo>")
+			return fmt.Errorf("uso: aronium-util credit limit <id_cliente> <monto_limite>")
 		}
 		cid, err := strconv.ParseInt(rem[0], 10, 64)
 		if err != nil {
@@ -633,7 +720,7 @@ func runFiados(args []string) error {
 		}
 		limitVal, err := strconv.ParseFloat(rem[1], 64)
 		if err != nil {
-			return fmt.Errorf("monto de cupo inválido: %w", err)
+			return fmt.Errorf("monto de límite inválido: %w", err)
 		}
 		stateConn, err := db.OpenStateDB(cfg.StateDBPath)
 		if err != nil {
@@ -643,18 +730,22 @@ func runFiados(args []string) error {
 		if err := db.SetCustomerCreditLimit(stateConn, cid, fmt.Sprintf("Cliente #%d", cid), limitVal); err != nil {
 			return err
 		}
-		fmt.Printf("[✓] Cupo máximo de fiado para cliente #%d actualizado a $%.2f COP\n", cid, limitVal)
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"customer_id": cid, "credit_limit": limitVal})
+		}
+		fmt.Printf("[✓] Límite máximo de crédito para cliente #%d actualizado a $%.2f\n", cid, limitVal)
 		return nil
 
 	case "statement":
-		fs := flag.NewFlagSet("fiados statement", flag.ContinueOnError)
+		fs := flag.NewFlagSet("credit statement", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
 		}
 		rem := fs.Args()
 		if len(rem) < 1 {
-			return fmt.Errorf("uso: aronium-util fiados statement \"<nombre_o_id_cliente>\"")
+			return fmt.Errorf("uso: aronium-util credit statement \"<nombre_o_id_cliente>\"")
 		}
 		customerQuery := strings.Join(rem, " ")
 		posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
@@ -668,24 +759,29 @@ func runFiados(args []string) error {
 		}
 		defer stateConn.Close()
 
-		eng := fiados.NewEngine(cfg, posConn, stateConn)
+		eng := credit.NewEngine(cfg, posConn, stateConn)
 		rep, err := eng.BuildLedger(customerQuery, 0)
 		if err != nil {
 			return err
 		}
 		if len(rep.Accounts) == 0 {
-			return fmt.Errorf("no se encontraron cuentas de fiado para el cliente '%s'", customerQuery)
+			return fmt.Errorf("no se encontraron cuentas de crédito para el cliente '%s'", customerQuery)
 		}
-		for _, acc := range rep.Accounts {
-			fmt.Println(fiados.GenerateStatement(acc, cfg.StoreName, cfg.Inventory.DualCurrencyCode, cfg.Inventory.DualCurrencyRate))
+		stmt := credit.GenerateStatement(rep.Accounts[0], cfg.StoreName, cfg.Inventory.DualCurrencyCode, cfg.Inventory.DualCurrencyRate)
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"account":   rep.Accounts[0],
+				"statement": stmt,
+			})
 		}
+		fmt.Println(stmt)
 		return nil
 
 	case "sync":
 		return runSync(args)
 
 	default:
-		return fmt.Errorf("subcomando de fiados desconocido '%s' (usa: list, note add, limit, statement, sync)", sub)
+		return fmt.Errorf("subcomando de credit desconocido '%s' (usa: list, note add, limit, statement, sync)", sub)
 	}
 }
 
@@ -792,7 +888,7 @@ func runInventory(args []string) error {
 		}
 		fmt.Printf("=== LISTA DE PRECIOS: %s (Moneda Dual %s @ %.2f) ===\n", strings.ToUpper(*listName), cfg.Inventory.DualCurrencyCode, cfg.Inventory.DualCurrencyRate)
 		for _, it := range items {
-			fmt.Printf("  • [%-8s] %-26s | Base: $%8.2f | %s: $%8.2f COP (%.2f %s)\n",
+			fmt.Printf("  • [%-8s] %-26s | Base: $%8.2f | %s: $%8.2f (%.2f %s)\n",
 				it.ProductCode, it.ProductName, it.BasePrice, it.ListName, it.CustomPrice, it.DualPrice, cfg.Inventory.DualCurrencyCode)
 		}
 		return nil
@@ -840,6 +936,9 @@ func runRegisters(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(id)
+		}
 		fmt.Printf("[✓] Estación registrada como caja '%s' en host '%s'\n", id.RegisterID, id.Hostname)
 		return nil
 
@@ -870,8 +969,8 @@ func runRegisters(args []string) error {
 		}
 		fmt.Println("=== VENTAS Y TRAZABILIDAD POR CAJA REGISTRADORA (PRO-FR-004) ===")
 		for _, s := range summaries {
-			fmt.Printf("• Caja %-10s | Transacciones: %-4d | Total: $%-10.2f | Contado: $%-10.2f | Fiado: $%-10.2f\n",
-				s.RegisterID, s.TransactionCount, s.TotalSales, s.CashSales, s.CreditFiadoSales)
+			fmt.Printf("• Caja %-10s | Transacciones: %-4d | Total: $%-10.2f | Contado: $%-10.2f | Crédito: $%-10.2f\n",
+				s.RegisterID, s.TransactionCount, s.TotalSales, s.CashSales, s.CreditSales)
 		}
 		return nil
 
@@ -938,6 +1037,7 @@ func runBackup(args []string) error {
 	passphrase := fs.String("passphrase", os.Getenv("ARONIUM_BACKUP_PASSPHRASE"), "Frase de cifrado AES-256-GCM (opcional)")
 	fileArg := fs.String("file", "", "Ruta del archivo de respaldo para verify o restore")
 	keep := fs.Int("keep", 7, "Cantidad de respaldos a conservar en rotación")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, _, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -949,6 +1049,9 @@ func runBackup(args []string) error {
 		manifest, err := mgr.Create(context.Background(), *passphrase)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(manifest)
 		}
 		fmt.Printf("[✓] Respaldo en caliente creado exitosamente:\n")
 		fmt.Printf("    • Archivo:  %s (%d bytes)\n", manifest.ArchivePath, manifest.SizeBytes)
@@ -968,6 +1071,9 @@ func runBackup(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"verified": true, "details": res})
+		}
 		fmt.Printf("[✓] Verificación de respaldo exitosa: %s\n", res)
 		return nil
 
@@ -983,6 +1089,9 @@ func runBackup(args []string) error {
 		if err != nil {
 			return err
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"restored": cfg.PosDBPath, "safety_backup": safety})
+		}
 		fmt.Printf("[✓] Base de datos restaurada exitosamente en: %s\n", cfg.PosDBPath)
 		if safety != "" {
 			fmt.Printf("    • Respaldo de seguridad previo guardado en: %s\n", safety)
@@ -993,6 +1102,9 @@ func runBackup(args []string) error {
 		removed, err := mgr.ApplyRetention(*keep)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"removed": removed})
 		}
 		fmt.Printf("[✓] Rotación completada (%d respaldos antiguos eliminados).\n", len(removed))
 		return nil
@@ -1012,6 +1124,7 @@ func runMigrate(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	format := fs.String("format", "sqlserver", "Formato de destino: json, csv, postgres, sqlserver")
 	outDir := fs.String("out", "", "Carpeta de salida para la migración")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, _, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -1038,6 +1151,9 @@ func runMigrate(args []string) error {
 		verRes, err := eng.Verify(bundle)
 		if err != nil {
 			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"files": files, "verification": verRes})
 		}
 		fmt.Printf("[✓] Migración / Exportación (%s) completada y verificada (MIG-004/005 Passed=%v):\n", *format, verRes.Passed)
 		for _, f := range files {
@@ -1068,6 +1184,7 @@ func runReports(args []string) error {
 	fs := flag.NewFlagSet("reports", flag.ContinueOnError)
 	dateFilter := fs.String("date", "", "Fecha del reporte (YYYY-MM-DD, vacío para consolidado)")
 	deliver := fs.Bool("deliver", true, "Guardar copia automática en carpeta de Google Drive / Reportes")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, _, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -1091,29 +1208,30 @@ func runReports(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Print(eng.FormatDailyReportText(rep))
 		if *deliver {
-			saved, err := eng.SaveAndDeliver(context.Background(), rep)
-			if err == nil {
-				fmt.Printf("[✓] Reporte archivado en Google Drive Sync: %s\n", saved)
-			}
+			_, _ = eng.SaveAndDeliver(context.Background(), rep)
 		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		fmt.Print(eng.FormatDailyReportText(rep))
 		return nil
 	default:
 		return fmt.Errorf("subcomando de reports desconocido '%s' (usa: daily, schedule)", sub)
 	}
 }
 
-// 14. dian (TODO-052..056)
-func runDIAN(args []string) error {
+// 14. fiscal (TODO-052..056)
+func runFiscal(args []string) error {
 	sub := "list"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub = strings.ToLower(args[0])
 		args = args[1:]
 	}
-	fs := flag.NewFlagSet("dian", flag.ContinueOnError)
-	docID := fs.Int64("doc-id", 0, "ID de documento en Aronium pos.db a emitir ante la DIAN")
-	reason := fs.String("reason", "Devolución / Anulación", "Motivo para nota crédito")
+	fs := flag.NewFlagSet("fiscal", flag.ContinueOnError)
+	docID := fs.Int64("doc-id", 0, "ID de documento en Aronium pos.db a emitir electrónicamente")
+	reason := fs.String("reason", "Devolución / Anulación", "Motivo para nota de crédito")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, _, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -1130,7 +1248,7 @@ func runDIAN(args []string) error {
 	}
 	defer stateConn.Close()
 
-	prov := dian.NewColombiaDIANProvider(cfg, stateConn)
+	prov := fiscal.NewStandardUBLProvider(cfg, stateConn)
 
 	switch sub {
 	case "emit":
@@ -1138,19 +1256,26 @@ func runDIAN(args []string) error {
 		if err != nil {
 			return err
 		}
+		var results []*fiscal.FiscalSubmissionResult
 		for _, d := range docs {
 			if *docID != 0 && d.ID != *docID {
 				continue
 			}
 			res, err := prov.SubmitDocument(context.Background(), d)
-			if err != nil {
-				fmt.Printf("[!] Doc #%s (%s) en cola fiscal: %v\n", d.Number, d.CustomerName, err)
-				continue
+			results = append(results, res)
+			if !*jsonOut {
+				if err != nil {
+					fmt.Printf("[!] Doc #%s (%s) en cola fiscal: %v\n", d.Number, d.CustomerName, err)
+					continue
+				}
+				fmt.Printf("[✓] Documento Electrónico emitido: %s | Estado: %s\n", res.FiscalNumber, res.Status)
+				fmt.Printf("    • UUID: %s\n", res.DocumentUUID)
+				fmt.Printf("    • XML:  %s\n", res.XMLPath)
+				fmt.Printf("    • PDF:  %s\n", res.PDFPath)
 			}
-			fmt.Printf("[✓] Documento Electrónico DIAN emitido: %s | Estado: %s\n", res.FiscalNumber, res.Status)
-			fmt.Printf("    • CUFE: %s\n", res.CUFE)
-			fmt.Printf("    • XML:  %s\n", res.XMLPath)
-			fmt.Printf("    • PDF:  %s\n", res.PDFPath)
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(results)
 		}
 		return nil
 
@@ -1165,7 +1290,10 @@ func runDIAN(args []string) error {
 				if err != nil {
 					return err
 				}
-				fmt.Printf("[✓] Nota Crédito DIAN emitida: %s | CUDE: %s\n", res.FiscalNumber, res.CUFE)
+				if *jsonOut {
+					return json.NewEncoder(os.Stdout).Encode(res)
+				}
+				fmt.Printf("[✓] Nota de Crédito emitida: %s | UUID: %s\n", res.FiscalNumber, res.DocumentUUID)
 				break
 			}
 		}
@@ -1176,15 +1304,18 @@ func runDIAN(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("=== COLA Y ESTADO DE DOCUMENTOS ELECTRÓNICOS DIAN (UBL 2.1) ===")
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(list)
+		}
+		fmt.Println("=== COLA Y ESTADO DE DOCUMENTOS ELECTRÓNICOS (UBL 2.1) ===")
 		for _, r := range list {
-			fmt.Printf("• %-18s (Aronium #%s) | Estado: %-12s | CUFE: %s...\n",
-				r.FiscalNumber, r.AroniumDocumentNumber, r.Status, truncateCUFE(r.CUFE))
+			fmt.Printf("• %-18s (Aronium #%s) | Estado: %-12s | UUID: %s...\n",
+				r.FiscalNumber, r.AroniumDocumentNumber, r.Status, truncateUUID(r.DocumentUUID))
 		}
 		return nil
 
 	default:
-		return fmt.Errorf("subcomando de dian desconocido '%s' (usa: emit, list, credit-note)", sub)
+		return fmt.Errorf("subcomando de fiscal desconocido '%s' (usa: emit, list, credit-note)", sub)
 	}
 }
 
@@ -1194,6 +1325,7 @@ func runAdmin(args []string) error {
 	serveWeb := fs.Bool("serve", false, "Levantar panel administrativo web local de solo lectura en localhost:8080")
 	addr := fs.String("addr", "127.0.0.1:8080", "Dirección del servidor web administrativo local")
 	filterReg := fs.String("filter-register", "", "Filtrar por caja registradora")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON para consumo por Aronium Utility UI (Tauri 2 + Svelte)")
 	cfg, _, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
@@ -1211,6 +1343,16 @@ func runAdmin(args []string) error {
 	defer stateConn.Close()
 
 	console := admin.NewConsole(cfg, posConn, stateConn)
+	if *jsonOut {
+		snap, err := console.BuildSnapshot(*filterReg)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(snap)
+	}
+
 	tui, err := console.RenderTerminalTUI(*filterReg)
 	if err != nil {
 		return err
@@ -1240,7 +1382,7 @@ func runDemoDB(args []string) error {
 	return nil
 }
 
-func truncateCUFE(s string) string {
+func truncateUUID(s string) string {
 	if len(s) <= 24 {
 		return s
 	}

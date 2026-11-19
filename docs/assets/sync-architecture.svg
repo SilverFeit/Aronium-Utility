@@ -1,51 +1,54 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 320" width="100%">
   <rect width="1100" height="320" rx="16" fill="#0f172a" stroke="#334155" stroke-width="2"/>
-  <text x="550" y="36" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-weight="bold" font-size="18">Arquitectura Offline-First de Aronium Utility (Solo Lectura sobre pos.db + Bóveda Local + Google Drive)</text>
+  <text x="550" y="36" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-weight="bold" font-size="17">Arquitectura: Aronium Utility UI (Tauri 2 + Svelte + TS) → Sidecar Go CLI (aronium-util) → pos.db &amp; Google Drive</text>
 
-  <!-- Box 1: Aronium Lite POS -->
-  <rect x="36" y="70" width="220" height="210" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
-  <text x="146" y="102" text-anchor="middle" fill="#38bdf8" font-family="sans-serif" font-weight="bold" font-size="15">1. Aronium Lite (POS)</text>
-  <text x="146" y="130" text-anchor="middle" fill="#e2e8f0" font-family="monospace" font-size="13">pos.db (SQLite)</text>
-  <text x="146" y="160" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Ventas &amp; Pagos Divididos</text>
-  <text x="146" y="182" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Clientes &amp; Notas</text>
-  <text x="146" y="204" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Productos &amp; Stock</text>
-  <rect x="56" y="226" width="180" height="34" rx="6" fill="#090d16" stroke="#0284c7" stroke-width="1"/>
-  <text x="146" y="248" text-anchor="middle" fill="#7dd3fc" font-family="monospace" font-size="12">mode=ro (Solo Lectura)</text>
+  <!-- Box 1: Desktop UI (Svelte + TypeScript + Tauri 2) -->
+  <rect x="30" y="70" width="245" height="210" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+  <text x="152" y="98" text-anchor="middle" fill="#38bdf8" font-family="sans-serif" font-weight="bold" font-size="14.5">1. Aronium Utility UI</text>
+  <text x="152" y="120" text-anchor="middle" fill="#e2e8f0" font-family="monospace" font-size="12">Tauri 2 + Svelte + TypeScript</text>
+  <text x="152" y="148" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Dashboard &amp; Métricas en Vivo</text>
+  <text x="152" y="170" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Formulario Cuentas de Crédito</text>
+  <text x="152" y="192" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• Validador de Inventario &amp; Kardex</text>
+  <text x="152" y="214" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">• WebView Nativo del SO (0% Chromium)</text>
+  <rect x="50" y="232" width="205" height="32" rx="6" fill="#090d16" stroke="#0284c7" stroke-width="1"/>
+  <text x="152" y="252" text-anchor="middle" fill="#7dd3fc" font-family="monospace" font-size="11.5">aronium-utility-ui.exe</text>
 
   <!-- Arrow 1 -> 2 -->
-  <path d="M256 175 L312 175" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrow)"/>
-  <text x="284" y="162" text-anchor="middle" fill="#7dd3fc" font-family="monospace" font-size="11">Watcher</text>
+  <path d="M275 175 L330 175" stroke="#38bdf8" stroke-width="3"/>
+  <text x="302" y="160" text-anchor="middle" fill="#7dd3fc" font-family="monospace" font-size="10.5">Tauri IPC</text>
+  <text x="302" y="192" text-anchor="middle" fill="#7dd3fc" font-family="monospace" font-size="10.5">JSON</text>
 
-  <!-- Box 2: Aronium Utility Core & State DB -->
-  <rect x="314" y="70" width="260" height="210" rx="12" fill="#1e293b" stroke="#10b981" stroke-width="2"/>
-  <text x="444" y="102" text-anchor="middle" fill="#34d399" font-family="sans-serif" font-weight="bold" font-size="15">2. Motor Core (aronium-util)</text>
-  <text x="444" y="128" text-anchor="middle" fill="#e2e8f0" font-family="monospace" font-size="12">aronium_utility_state.db</text>
-  <text x="444" y="156" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Enrutador de Fiados por Cliente</text>
-  <text x="444" y="178" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Kardex, Alertas &amp; Vencimientos</text>
-  <text x="444" y="200" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Cola Offline (sync_outbox)</text>
-  <text x="444" y="222" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Bóveda Cifrada AES-256-GCM</text>
-  <text x="444" y="244" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Online Backup (VACUUM INTO)</text>
+  <!-- Box 2: Go CLI Sidecar & Startup Watcher -->
+  <rect x="332" y="70" width="280" height="210" rx="12" fill="#1e293b" stroke="#10b981" stroke-width="2"/>
+  <text x="472" y="98" text-anchor="middle" fill="#34d399" font-family="sans-serif" font-weight="bold" font-size="14.5">2. Motor CLI Existente (Go)</text>
+  <text x="472" y="120" text-anchor="middle" fill="#e2e8f0" font-family="monospace" font-size="12">aronium-util.exe (Sidecar &amp; Daemon)</text>
+  <text x="472" y="148" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Arranca al encender Windows (watch)</text>
+  <text x="472" y="170" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Lee pos.db en modo solo lectura (RO)</text>
+  <text x="472" y="192" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Enrutador de Cuentas por Cliente</text>
+  <text x="472" y="214" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="12">• Estado en aronium_utility_state.db</text>
+  <rect x="354" y="232" width="236" height="32" rx="6" fill="#090d16" stroke="#10b981" stroke-width="1"/>
+  <text x="472" y="252" text-anchor="middle" fill="#6ee7b7" font-family="monospace" font-size="11.5">Cero duplicación de lógica</text>
 
   <!-- Arrow 2 -> 3 -->
-  <path d="M574 175 L630 175" stroke="#34d399" stroke-width="3"/>
-  <text x="602" y="162" text-anchor="middle" fill="#6ee7b7" font-family="monospace" font-size="11">OAuth2</text>
+  <path d="M612 175 L665 175" stroke="#34d399" stroke-width="3"/>
+  <text x="638" y="160" text-anchor="middle" fill="#6ee7b7" font-family="monospace" font-size="10.5">OAuth2</text>
 
-  <!-- Box 3: Google Drive & Sheets + Multi-Station Hub + DIAN -->
-  <rect x="632" y="70" width="432" height="210" rx="12" fill="#1e293b" stroke="#6366f1" stroke-width="2"/>
-  <text x="848" y="102" text-anchor="middle" fill="#a5b4fc" font-family="sans-serif" font-weight="bold" font-size="15">3. Sincronización Nube, Multi-Caja &amp; Fiscal</text>
-  <rect x="652" y="120" width="392" height="44" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
-  <text x="848" y="140" text-anchor="middle" fill="#6ee7b7" font-family="sans-serif" font-weight="bold" font-size="13">Google Drive API v3 &amp; Google Sheets API v4 (Web OAuth 2.0)</text>
-  <text x="848" y="156" text-anchor="middle" fill="#d1fae5" font-family="monospace" font-size="11">Aronium_Inventario_y_Fiados.xlsx + /Fiados/Clientes/&lt;Cliente&gt;.xlsx</text>
+  <!-- Box 3: Aronium pos.db + Google Drive & Sheets + Multi-Station Hub -->
+  <rect x="668" y="70" width="402" height="210" rx="12" fill="#1e293b" stroke="#6366f1" stroke-width="2"/>
+  <text x="869" y="98" text-anchor="middle" fill="#a5b4fc" font-family="sans-serif" font-weight="bold" font-size="14.5">3. Datos Locales &amp; Sincronización Google Drive</text>
+  <rect x="686" y="116" width="366" height="48" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="869" y="136" text-anchor="middle" fill="#6ee7b7" font-family="sans-serif" font-weight="bold" font-size="12.5">Google Drive API v3 &amp; Google Sheets API v4 (Web OAuth 2.0)</text>
+  <text x="869" y="154" text-anchor="middle" fill="#d1fae5" font-family="monospace" font-size="10.5">Aronium_Inventario_y_Cuentas_Credito.xlsx + /Clientes/&lt;Cliente&gt;.xlsx</text>
 
-  <rect x="652" y="174" width="190" height="90" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-width="1"/>
-  <text x="747" y="198" text-anchor="middle" fill="#38bdf8" font-family="sans-serif" font-weight="bold" font-size="13">Hub Multi-Caja</text>
-  <text x="747" y="218" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">POS-01, POS-02, POS-03</text>
-  <text x="747" y="236" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Reconciliación de Stock</text>
-  <text x="747" y="254" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Panel Admin localhost:8080</text>
+  <rect x="686" y="174" width="178" height="90" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-width="1"/>
+  <text x="775" y="198" text-anchor="middle" fill="#38bdf8" font-family="sans-serif" font-weight="bold" font-size="12.5">Aronium Lite pos.db</text>
+  <text x="775" y="218" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">SQLite mode=ro</text>
+  <text x="775" y="236" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Online Backup VACUUM</text>
+  <text x="775" y="254" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Cifrado AES-256-GCM</text>
 
-  <rect x="854" y="174" width="190" height="90" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
-  <text x="949" y="198" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-weight="bold" font-size="13">Puente Fiscal DIAN</text>
-  <text x="949" y="218" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">UBL 2.1 / POS Electrónico</text>
-  <text x="949" y="236" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">CUFE SHA-384 + QR + XML</text>
-  <text x="949" y="254" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Reportes &amp; ESC/POS</text>
+  <rect x="874" y="174" width="178" height="90" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
+  <text x="963" y="198" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-weight="bold" font-size="12.5">Multi-Caja &amp; Fiscal</text>
+  <text x="963" y="218" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">POS-01, POS-02, Hub</text>
+  <text x="963" y="236" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Facturación UBL 2.1</text>
+  <text x="963" y="254" text-anchor="middle" fill="#cbd5e1" font-family="sans-serif" font-size="11">Reportes &amp; ESC/POS</text>
 </svg>
