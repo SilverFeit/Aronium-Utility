@@ -2,6 +2,22 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.6] — 2026-11-22
+
+### Added
+- **Windows System Tray Controller (`cmd/aronium-utility-ui/tray_windows.go`, `internal/service`):**
+  - Pure-Go (`CGO_ENABLED=0`) native Win32 System Tray icon in the taskbar notification area (`Shell_NotifyIconW`) with multi-resolution icon, Explorer restart recovery (`TaskbarCreated`), and single-instance window reopen lock (`ui-instance.json`).
+  - Right-click context menu inside the taskbar tray:
+    - **`Abrir Aronium Utility`**: Opens or brings back the desktop app window.
+    - **`✓ Iniciar al encender el sistema (Abrir automáticamente)`**: Native checkable menu item (`MF_CHECKED` / `MF_UNCHECKED`) toggled in 1 click, synced with `%LOCALAPPDATA%\AroniumUtility\autostart.pref` and the `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aronium Utility.lnk` shortcut so Aronium Utility opens automatically whenever the PC boots.
+    - **`Buscar y actualizar desde GitHub`**: Checks GitHub Releases (also pre-checks in background to show available version tags), downloads the SHA-256 verified installer, and applies updates seamlessly.
+    - **`Cerrar del todo`**: Cleanly stops the background watcher (`aronium-util watch`), closes the UI window process, removes the tray icon, and exits completely.
+- **Hidden Child Console Execution & Synchronized UI Autostart Checkbox:**
+  - Configured `CREATE_NO_WINDOW` / `HideWindow` for background `aronium-util.exe` and updater child invocations on Windows.
+  - Added CLI `aronium-util service autostart [status|enable|disable|toggle] --json` and a matching checkbox inside **Modo Avanzado → `6. Diagnóstico & Actualización`**.
+
+---
+
 ## [1.2.5] — 2026-11-22
 
 ### Changed

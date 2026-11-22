@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SilverFeit/Aronium-Utility/internal/service"
 )
 
 const (
@@ -358,6 +360,7 @@ func launchDetachedInstaller(installerPath string, launchUI bool) error {
 		argStr := strings.Join(args, " ")
 		cmdLine := fmt.Sprintf(`ping 127.0.0.1 -n 2 >nul && "%s" %s`, installerPath, argStr)
 		cmd := exec.Command("cmd.exe", "/C", "start", "", "/B", "cmd.exe", "/C", cmdLine)
+		service.HideChildWindow(cmd)
 		return cmd.Start()
 	}
 

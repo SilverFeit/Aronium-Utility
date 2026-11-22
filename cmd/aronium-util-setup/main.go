@@ -25,7 +25,7 @@ var embeddedUIBinary []byte
 //go:embed payload/app-icon.ico
 var embeddedAppIcon []byte
 
-const InstallerVersion = "1.2.5"
+const InstallerVersion = "1.2.6"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -80,7 +80,7 @@ func main() {
 	fmt.Println("[✓] ¡INSTALACIÓN UNIFICADA COMPLETADA EXITOSAMENTE!")
 	fmt.Println("    • Ejecutable CLI (Motor Go):    aronium-util.exe")
 	fmt.Println("    • Ejecutable Interfaz Gráfica:  aronium-utility-ui.exe (Aronium Utility UI)")
-	fmt.Println("    • Inicio Automático con PC:     aronium-util.exe watch (Activo al encender)")
+	fmt.Println("    • Inicio Automático con PC:     aronium-utility-ui.exe (UI + Bandeja + Monitor en vivo)")
 	fmt.Println("")
 	fmt.Println("    Comandos disponibles desde cualquier terminal o acceso directo:")
 	fmt.Println("      aronium-utility-ui           (Abrir Aronium Utility UI directamente)")
@@ -263,12 +263,20 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 	}
 
 	// 5. Register automatic startup on Windows boot/logon (.lnk Startup folder) + Desktop shortcut for Aronium Utility UI
-	fmt.Printf("[5/5] Registrando arranque automático del CLI al encender el equipo y acceso directo de Aronium Utility UI...\n")
+	fmt.Printf("[5/5] Registrando arranque automático al encender el equipo y acceso directo de Aronium Utility UI...\n")
 	if installService && len(cliPayload) > 1024 {
-		cmd := exec.Command(destCLIBin, "service", "install", "--config", cfgPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		_ = cmd.Run()
+		mgr := service.NewManager(cfgPath)
+		if isUpgrade && mgr.ReadAutostartPreference() == "disabled" {
+			fmt.Println("[Upgrade] Preservando preferencia del usuario: inicio automático desactivado.")
+		} else {
+			mgr.BinaryPath = destCLIBin
+			if _, aErr := mgr.SetUIAutostart(true, destUIBin); aErr != nil {
+				cmd := exec.Command(destCLIBin, "service", "install", "--config", cfgPath)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				_ = cmd.Run()
+			}
+		}
 	}
 	createWindowsDesktopShortcut(destUIBin)
 
@@ -455,6 +463,9 @@ func runUninstall(installDir, dataDir string) error {
 	_ = os.Remove(filepath.Join(installDir, "app-icon.ico"))
 	_ = os.Remove(filepath.Join(dataDir, "aronium-env.profile"))
 
+	if sp := service.UIAutostartShortcutPath(); sp != "" {
+		_ = os.Remove(sp)
+	}
 	if sp := service.StartupShortcutPath(); sp != "" {
 		_ = os.Remove(sp)
 	}

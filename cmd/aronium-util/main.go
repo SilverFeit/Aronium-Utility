@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.5"
+const Version = "1.2.6"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -641,10 +641,59 @@ func runService(args []string) error {
 		fmt.Println("[✓]", msg)
 	case "status":
 		st := mgr.Status()
+		autoSt := mgr.UIAutostartStatus()
 		if *jsonOut {
-			return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": st, "log_path": mgr.LogPath})
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"status":    st,
+				"log_path":  mgr.LogPath,
+				"autostart": autoSt,
+			})
 		}
 		fmt.Println("Estado del servicio:", st)
+		fmt.Printf("Inicio automático UI: %v (%s)\n", autoSt.Enabled, autoSt.ShortcutPath)
+	case "autostart":
+		subAct := "status"
+		remaining := fs.Args()
+		if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "-") {
+			subAct = strings.ToLower(remaining[0])
+			remaining = remaining[1:]
+		}
+		afs := flag.NewFlagSet("service autostart", flag.ContinueOnError)
+		aCfg := afs.String("config", *cfgPath, "Ruta a aronium-util.yaml")
+		aJson := afs.Bool("json", *jsonOut, "Salida en formato JSON")
+		aUiBin := afs.String("ui-bin", "", "Ruta opcional a aronium-utility-ui.exe")
+		if err := afs.Parse(remaining); err != nil {
+			return err
+		}
+		am := service.NewManager(*aCfg)
+		var (
+			st  service.AutostartStatus
+			err error
+		)
+		switch subAct {
+		case "status", "":
+			st = am.UIAutostartStatus()
+		case "enable", "on", "true":
+			st, err = am.SetUIAutostart(true, *aUiBin)
+		case "disable", "off", "false":
+			st, err = am.SetUIAutostart(false, *aUiBin)
+		case "toggle":
+			cur := am.UIAutostartStatus()
+			st, err = am.SetUIAutostart(!cur.Enabled, *aUiBin)
+		default:
+			return fmt.Errorf("subcomando de autostart desconocido '%s' (usa: status, enable, disable, toggle)", subAct)
+		}
+		if err != nil {
+			return err
+		}
+		if *aJson {
+			return json.NewEncoder(os.Stdout).Encode(st)
+		}
+		if st.Enabled {
+			fmt.Printf("[✓] Inicio automático ACTIVADO (%s)\n", st.ShortcutPath)
+		} else {
+			fmt.Println("[✓] Inicio automático DESACTIVADO")
+		}
 	case "logs":
 		logs, err := mgr.Logs(8192)
 		if err != nil {
@@ -655,7 +704,7 @@ func runService(args []string) error {
 		}
 		fmt.Println(logs)
 	default:
-		return fmt.Errorf("acción de servicio desconocida '%s' (usa: install, start, stop, status, logs)", action)
+		return fmt.Errorf("acción de servicio desconocida '%s' (usa: install, start, stop, status, autostart, logs)", action)
 	}
 	return nil
 }

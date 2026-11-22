@@ -129,13 +129,13 @@ The unified installer automatically:
 - Installs **`aronium-util.exe`** (Go CLI Engine) and **`aronium-utility-ui.exe`** (Aronium Utility UI) into `%LOCALAPPDATA%\Programs\AroniumUtility\`.
 - Adds `%LOCALAPPDATA%\Programs\AroniumUtility` to your Windows User **`PATH`** and configures `ARONIUM_*` environment variables (including `ARONIUM_ACCOUNTS_DB`) in `HKCU\Environment`.
 - Detects previous installations automatically, preserves `aronium-util.yaml` & custom database paths, and runs automatic lossless schema migrations on `%LOCALAPPDATA%\AroniumUtility\cuentas.db` (saving a pre-migration `.v1.bak` backup).
-- Registers **`aronium-util.exe watch`** via a standard Windows Startup Folder shortcut (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aronium Utility Watcher.lnk`) so the CLI runs automatically on boot.
+- Registers **Aronium Utility** (`aronium-utility-ui.exe`, which starts the System Tray controller + background POS watcher) via a standard Windows Startup Folder shortcut (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aronium Utility.lnk`) so the app opens automatically on boot (checkable on/off anytime from the Windows System Tray or `Modo Avanzado`).
 - Creates a Desktop shortcut for **Aronium Utility UI** with its embedded high-contrast multi-resolution icon (`app-icon.ico`).
 - **Authenticode Code-Signing:** All Windows executables carry embedded PE metadata (`VS_VERSION_INFO`, `asInvoker` manifest, app icon) and SHA-256 Authenticode signatures (`AroniumUtility-CodeSigning.cer` is bundled if you wish to import it into Windows *Trusted Publishers* / *Trusted Root Certification Authorities*).
 
 ### Option B — Portable `.zip` with `install.bat` / `install.ps1`
 
-1. Download **`Aronium-Utility-1.2.5-windows-x64.zip`** *(or `Aronium-Utility-1.2.5-windows-x86.zip`)*.
+1. Download **`Aronium-Utility-1.2.6-windows-x64.zip`** *(or `Aronium-Utility-1.2.6-windows-x86.zip`)*.
 2. Extract the archive and double-click **`install.bat`** *(or run `.\install.ps1` in PowerShell)*.
 
 ---
@@ -206,7 +206,7 @@ aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium
 ```text
 Aronium-Utility/
 ├── go.mod                               # Pure-Go module (modernc.org/sqlite + gopkg.in/yaml.v3 — zero CGO)
-├── VERSION                              # Single source of truth for release version (1.2.5)
+├── VERSION                              # Single source of truth for release version (1.2.6)
 ├── cmd/
 │   ├── aronium-util/                    # Main Go CLI & background startup watcher (`aronium-util.exe`)
 │   ├── aronium-utility-ui/              # Desktop UI executable (`aronium-utility-ui.exe`) consuming Go CLI sidecar

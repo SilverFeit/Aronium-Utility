@@ -42,7 +42,11 @@
   let kardexList = $state<KardexEntry[]>([]);
   let lastSyncResult = $state<SyncResult | null>(null);
   let lastBackup = $state<BackupManifest | null>(null);
-  let serviceStatus = $state<{ status: string; log_path: string } | null>(null);
+  let serviceStatus = $state<{
+    status: string;
+    log_path: string;
+    autostart?: { enabled: boolean; preference: string; shortcut_path: string };
+  } | null>(null);
   let updateCheck = $state<UpdateCheckResult | null>(null);
   let updateApplyResult = $state<UpdateApplyResult | null>(null);
   let checkingUpdate = $state(false);
@@ -695,17 +699,31 @@
     }
   }
 
-  async function handleInstallAutoStartService() {
+  async function handleToggleAutostart(enableNext: boolean) {
     loading = true;
     try {
-      const res = await runAroniumCLI<{ result: string }>(['service', 'install', '--json']);
+      const action = enableNext ? 'enable' : 'disable';
+      const st = await runAroniumCLI<{ enabled: boolean; shortcut_path: string }>([
+        'service',
+        'autostart',
+        action,
+        '--json',
+      ]);
       await refreshAll();
-      showToast(`Inicio automático configurado: ${res.result}`);
+      if (st.enabled) {
+        showToast('Inicio automático ACTIVADO: Aronium Utility se abrirá al encender el PC.');
+      } else {
+        showToast('Inicio automático DESACTIVADO.');
+      }
     } catch (e: any) {
-      showToast(`Error registrando inicio automático: ${e?.message || e}`, true);
+      showToast(`Error cambiando inicio automático: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
+  }
+
+  async function handleInstallAutoStartService() {
+    await handleToggleAutostart(true);
   }
 
   async function handleCheckForUpdate(silent = false) {
@@ -2259,12 +2277,27 @@
               </table>
             </div>
             <div class="card">
-              <h3 class="card-title">Inicio Automático en Windows</h3>
-              <p style="font-size: 13px; color: var(--text-muted);">
-                Estado: <code>{serviceStatus?.status}</code>
+              <h3 class="card-title">Inicio Automático en Windows & Bandeja del Sistema</h3>
+              <label
+                style="display: flex; align-items: center; gap: 10px; font-size: 13.5px; cursor: pointer; margin-bottom: 12px;"
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(serviceStatus?.autostart?.enabled)}
+                  disabled={loading}
+                  onchange={(e) => handleToggleAutostart((e.currentTarget as HTMLInputElement).checked)}
+                />
+                <span>
+                  <strong>Abrir automáticamente al encender el PC</strong> (Bandeja + UI + Monitor en vivo)
+                </span>
+              </label>
+              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
+                Estado: <code>{serviceStatus?.status}</code><br />
+                También puedes marcar/desmarcar esta opción, actualizar o cerrar la app por completo haciendo clic
+                derecho sobre el ícono de <strong>Aronium Utility</strong> en la bandeja de tareas de Windows.
               </p>
-              <button class="btn btn-green" style="width: 100%;" onclick={handleInstallAutoStartService}>
-                Registrar Acceso Directo en Carpeta Startup
+              <button class="btn btn-green" style="width: 100%;" disabled={loading} onclick={handleInstallAutoStartService}>
+                {serviceStatus?.autostart?.enabled ? 'Reparar / Re-registrar Acceso Directo Startup' : 'Activar Inicio Automático'}
               </button>
             </div>
           </div>

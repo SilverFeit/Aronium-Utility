@@ -36,6 +36,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/migrate"
 	"github.com/SilverFeit/Aronium-Utility/internal/registers"
 	"github.com/SilverFeit/Aronium-Utility/internal/reports"
+	"github.com/SilverFeit/Aronium-Utility/internal/service"
 	gosync "github.com/SilverFeit/Aronium-Utility/internal/sync"
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
@@ -1208,5 +1209,44 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	carlosStillThere, err := recoveredMgr.GetAccountByIDAndName("Torre-110", "Cliente B")
 	if err != nil || carlosStillThere.CurrentBalance != 5000 {
 		t.Fatalf("expected sibling account Cliente B to remain intact after deleting Cliente A: %+v (err=%v)", carlosStillThere, err)
+	}
+}
+
+func TestBDD_TrayAutostartPreference_And_ServiceManagement(t *testing.T) {
+	tmpAppDir := filepath.Join(t.TempDir(), "AroniumUtilityApp")
+	if err := os.MkdirAll(tmpAppDir, 0755); err != nil {
+		t.Fatalf("mkdir temp app dir: %v", err)
+	}
+
+	mockUIBin := filepath.Join(t.TempDir(), "aronium-utility-ui")
+	if err := os.WriteFile(mockUIBin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write mock ui bin: %v", err)
+	}
+	t.Setenv("ARONIUM_UI_BIN", mockUIBin)
+
+	if resolved := service.ResolveUIBinaryPath(""); resolved != mockUIBin {
+		t.Fatalf("expected ResolveUIBinaryPath to return %s, got %s", mockUIBin, resolved)
+	}
+
+	mgr := &service.Manager{
+		AppDir:     tmpAppDir,
+		BinaryPath: filepath.Join(filepath.Dir(mockUIBin), "aronium-util"),
+		ConfigPath: filepath.Join(tmpAppDir, "aronium-util.yaml"),
+		LogPath:    filepath.Join(tmpAppDir, "logs", "service.log"),
+	}
+
+	initial := mgr.UIAutostartStatus()
+	if initial.Enabled {
+		t.Fatalf("expected initial autostart to be disabled in fresh temp dir, got %+v", initial)
+	}
+
+	enabledSt, err := mgr.SetUIAutostart(true, mockUIBin)
+	if err != nil || !enabledSt.Enabled || mgr.ReadAutostartPreference() != "enabled" {
+		t.Fatalf("expected autostart enabled after SetUIAutostart(true), got %+v (err=%v)", enabledSt, err)
+	}
+
+	disabledSt, err := mgr.SetUIAutostart(false, mockUIBin)
+	if err != nil || disabledSt.Enabled || mgr.ReadAutostartPreference() != "disabled" {
+		t.Fatalf("expected autostart disabled after SetUIAutostart(false), got %+v (err=%v)", disabledSt, err)
 	}
 }
