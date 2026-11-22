@@ -25,7 +25,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const AppVersion = "1.2.6"
+const AppVersion = "1.2.7"
 
 //go:embed all:dist
 var embeddedFrontend embed.FS

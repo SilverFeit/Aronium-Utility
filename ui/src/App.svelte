@@ -663,10 +663,22 @@
     }
   }
 
-  async function handleDriveWebLogin() {
-    showToast('Abriendo tu navegador web para iniciar sesión con Google Drive...');
+  async function handleDriveWebLogin(oneClick = true) {
+    showToast(
+      oneClick
+        ? 'Abriendo Google en tu navegador para conectar en 1 clic...'
+        : 'Abriendo asistente OAuth de Google Drive en tu navegador...'
+    );
     try {
-      await runAroniumCLI(['drive', 'login', '--timeout', '120', '--json']);
+      const args = [
+        'drive',
+        'login',
+        oneClick ? '--one-click=true' : '--one-click=false',
+        '--timeout',
+        '180',
+        '--json',
+      ];
+      await runAroniumCLI(args);
       await refreshAll();
       showToast('¡Tu cuenta de Google Drive quedó conectada exitosamente!');
     } catch (e: any) {
@@ -1745,13 +1757,17 @@
               </span>
             </div>
             <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.55;">
-              Cada vez que creas una cuenta, anotas artículos o registras un pago, el sistema genera un Excel
-              actualizado (<code>{driveStatus?.master_workbook_name}</code>) y una copia segura de tu base de
-              cuentas en Google Drive.
+              {#if driveStatus?.connected}
+                ✓ Cuenta vinculada: <strong>{driveStatus.account_email || 'Google Drive activo'}</strong>. Tus cuentas e inventario se respaldan automáticamente en <code>{driveStatus?.master_workbook_name}</code>.
+              {:else if driveStatus?.client_id_configured}
+                Haz clic en <strong>Conectar con Google (1 Clic)</strong> para iniciar sesión con tu cuenta de Google y guardar automáticamente tus cuentas e inventario en Drive.
+              {:else}
+                Haz clic en <strong>Conectar con Google (1 Clic)</strong> para vincular tu cuenta de Google en un solo paso (sin configuraciones complejas).
+              {/if}
             </p>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-              <button class="btn" disabled={loading} onclick={handleDriveWebLogin}>
-                Conectar Cuenta de Google Drive
+              <button class="btn" disabled={loading} onclick={() => handleDriveWebLogin(true)}>
+                {driveStatus?.connected ? 'Cambiar Cuenta de Google (1 Clic)' : 'Conectar con Google (1 Clic)'}
               </button>
               <button class="btn btn-green" disabled={loading} onclick={handleSyncDrive}>
                 Sincronizar con Drive Ahora
@@ -2147,8 +2163,9 @@
               <p style="font-size: 13px; color: var(--text-muted);">
                 Exporta 4 pestañas (<code>Cuentas</code>, <code>Movimientos</code>, <code>Detalle_Articulos</code>, <code>Inventario_Neto</code>) y respaldo binario en caliente <code>cuentas_backup.db</code>.
               </p>
-              <div style="display: flex; gap: 10px;">
-                <button class="btn" onclick={handleDriveWebLogin}>Autenticar Google Drive Web</button>
+              <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn" onclick={() => handleDriveWebLogin(true)}>Conectar en 1 Clic</button>
+                <button class="btn btn-outline" onclick={() => handleDriveWebLogin(false)}>Configurar Credenciales / Portal</button>
                 <button class="btn btn-green" onclick={handleSyncDrive}>Sincronizar Ahora</button>
               </div>
             </div>

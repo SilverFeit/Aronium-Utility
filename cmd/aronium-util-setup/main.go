@@ -25,7 +25,7 @@ var embeddedUIBinary []byte
 //go:embed payload/app-icon.ico
 var embeddedAppIcon []byte
 
-const InstallerVersion = "1.2.6"
+const InstallerVersion = "1.2.7"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")

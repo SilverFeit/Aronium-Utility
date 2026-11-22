@@ -2,6 +2,16 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.7] — 2026-11-22
+
+### Improved
+- **Simplified 1-Click Google Drive & Google Sheets Web OAuth Portal (`internal/sync/gdrive.go`, CLI, UI):**
+  - Redesigned `webAuthPortalHTML` with direct Google Cloud Console links (`drive.googleapis.com`, `sheets.googleapis.com`, `credentials`), an interactive **`Copiar URI`** button next to `http://127.0.0.1:8765/oauth2/callback`, and a collapsible **`¿Solo quieres probar rápido? (Avanzado)`** `<details>` section housing Opción B and Google OAuth Playground (`developers.google.com/oauthplayground/`).
+  - Added automatic extraction of `client_id` and `client_secret` from Google Cloud's **`credentials.json`** (`ParseGoogleCredentialsJSON` + `AutoDetectGoogleCredentialsJSON` + drag/upload picker in the web portal and `--credentials-json` CLI flag).
+  - Enabled **1-Click Google Sign-In (`?direct_redirect=1`)** from the non-technical **Modo Básico** UI (`Conectar con Google (1 Clic)`) and `--one-click` CLI flag whenever OAuth credentials (`ARONIUM_GDRIVE_CLIENT_ID` / `credentials.json` / `aronium-util.yaml`) are configured.
+
+---
+
 ## [1.2.6] — 2026-11-22
 
 ### Added

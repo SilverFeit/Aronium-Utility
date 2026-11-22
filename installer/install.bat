@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 echo ==========================================================================
-echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.6 (CLI + Aronium Utility UI)
+echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.7 (CLI + Aronium Utility UI)
 echo ==========================================================================
 
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\AroniumUtility"

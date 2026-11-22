@@ -214,6 +214,14 @@ func TestBDD_GoogleDriveWebOAuthAndUnifiedTableSync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Verify ParseGoogleCredentialsJSON for both "installed" and "web" Google Cloud credential formats
+	if cid, csec, pErr := gosync.ParseGoogleCredentialsJSON([]byte(`{"installed":{"client_id":"inst-123.apps.googleusercontent.com","client_secret":"GOCSPX-inst"}}`)); pErr != nil || cid != "inst-123.apps.googleusercontent.com" || csec != "GOCSPX-inst" {
+		t.Fatalf("ParseGoogleCredentialsJSON (installed) failed: cid=%q sec=%q err=%v", cid, csec, pErr)
+	}
+	if cid, csec, pErr := gosync.ParseGoogleCredentialsJSON([]byte(`{"web":{"client_id":"web-456.apps.googleusercontent.com","client_secret":"GOCSPX-web"}}`)); pErr != nil || cid != "web-456.apps.googleusercontent.com" || csec != "GOCSPX-web" {
+		t.Fatalf("ParseGoogleCredentialsJSON (web) failed: cid=%q sec=%q err=%v", cid, csec, pErr)
+	}
+
 	doneCh := make(chan error, 1)
 	go func() {
 		_, _, err := driveMgr.AuthenticateViaWeb(ctx, "test-client-id.apps.googleusercontent.com", "GOCSPX-test-secret", false)
@@ -221,6 +229,45 @@ func TestBDD_GoogleDriveWebOAuthAndUnifiedTableSync(t *testing.T) {
 	}()
 
 	time.Sleep(120 * time.Millisecond)
+
+	// Verify simplified portal HTML: direct Cloud Console/Playground links, "Copiar URI", credentials.json upload, collapsible Opción B & 1-click redirect
+	portalResp, err := http.Get("http://127.0.0.1:18765/")
+	if err != nil {
+		t.Fatalf("GET / webAuthPortalHTML failed: %v", err)
+	}
+	portalBytes, _ := io.ReadAll(portalResp.Body)
+	portalResp.Body.Close()
+	portalHTML := string(portalBytes)
+	for _, want := range []string{
+		"https://console.cloud.google.com/apis/credentials",
+		"https://console.cloud.google.com/apis/library/drive.googleapis.com",
+		"https://console.cloud.google.com/apis/library/sheets.googleapis.com",
+		"https://developers.google.com/oauthplayground/",
+		"Copiar URI",
+		"http://127.0.0.1:18765/oauth2/callback",
+		"¿Solo quieres probar rápido? (Avanzado)",
+		"Cargar credentials.json",
+		"Conectar con Google Drive (1 Clic)",
+	} {
+		if !strings.Contains(portalHTML, want) {
+			t.Fatalf("webAuthPortalHTML missing expected simplified element %q", want)
+		}
+	}
+
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	dirResp, err := noRedirectClient.Get("http://127.0.0.1:18765/?direct_redirect=1")
+	if err != nil {
+		t.Fatalf("GET /?direct_redirect=1 failed: %v", err)
+	}
+	dirResp.Body.Close()
+	if dirResp.StatusCode != http.StatusFound || !strings.Contains(dirResp.Header.Get("Location"), "test-client-id.apps.googleusercontent.com") {
+		t.Fatalf("expected 302 redirect to Google OAuth for ?direct_redirect=1, got status=%d location=%q", dirResp.StatusCode, dirResp.Header.Get("Location"))
+	}
+
 	resp, err := http.PostForm("http://127.0.0.1:18765/oauth2/callback", url.Values{
 		"code":          {"4/0MockAuthCodeFromBrowser"},
 		"account_email": {"tienda@comercio.org"},

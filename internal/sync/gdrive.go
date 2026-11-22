@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"mime/multipart"
 	"net"
@@ -65,15 +66,97 @@ type SyncResult struct {
 
 // DriveManager coordinates Web OAuth 2.0 authentication, atomic local Drive files, Drive API v3, and Sheets API v4.
 type DriveManager struct {
-	Cfg            *config.Config
-	PosDB          *sql.DB
-	StateDB        *sql.DB
-	HTTPClient     *http.Client
-	AuthEndpoint   string
-	TokenEndpoint  string
-	DriveEndpoint  string
-	UploadEndpoint string
-	SheetsEndpoint string
+	Cfg                  *config.Config
+	PosDB                *sql.DB
+	StateDB              *sql.DB
+	HTTPClient           *http.Client
+	AuthEndpoint         string
+	TokenEndpoint        string
+	DriveEndpoint        string
+	UploadEndpoint       string
+	SheetsEndpoint       string
+	PreferDirectRedirect bool
+}
+
+// ParseGoogleCredentialsJSON extracts client_id and client_secret from Google Cloud's downloaded credentials JSON
+// (supporting "installed", "web", and flat JSON shapes).
+func ParseGoogleCredentialsJSON(raw []byte) (clientID, clientSecret string, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "", "", fmt.Errorf("archivo JSON de credenciales vacío")
+	}
+	type oauthCred struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	var payload struct {
+		Installed    *oauthCred `json:"installed"`
+		Web          *oauthCred `json:"web"`
+		ClientID     string     `json:"client_id"`
+		ClientSecret string     `json:"client_secret"`
+	}
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return "", "", fmt.Errorf("JSON inválido de credenciales Google: %w", err)
+	}
+	switch {
+	case payload.Installed != nil && strings.TrimSpace(payload.Installed.ClientID) != "":
+		clientID = strings.TrimSpace(payload.Installed.ClientID)
+		clientSecret = strings.TrimSpace(payload.Installed.ClientSecret)
+	case payload.Web != nil && strings.TrimSpace(payload.Web.ClientID) != "":
+		clientID = strings.TrimSpace(payload.Web.ClientID)
+		clientSecret = strings.TrimSpace(payload.Web.ClientSecret)
+	case strings.TrimSpace(payload.ClientID) != "":
+		clientID = strings.TrimSpace(payload.ClientID)
+		clientSecret = strings.TrimSpace(payload.ClientSecret)
+	default:
+		return "", "", fmt.Errorf("el archivo no contiene client_id válido (se espera objeto 'installed' o 'web')")
+	}
+	return clientID, clientSecret, nil
+}
+
+// AutoDetectGoogleCredentialsJSON looks for a Google Cloud OAuth credentials JSON file in env or standard local paths.
+func AutoDetectGoogleCredentialsJSON(cfg *config.Config) (clientID, clientSecret, sourcePath string) {
+	if envVal := strings.TrimSpace(os.Getenv("ARONIUM_GDRIVE_CREDENTIALS_JSON")); envVal != "" {
+		if strings.HasPrefix(envVal, "{") {
+			if cid, csec, err := ParseGoogleCredentialsJSON([]byte(envVal)); err == nil {
+				return cid, csec, "env:ARONIUM_GDRIVE_CREDENTIALS_JSON"
+			}
+		} else if raw, err := os.ReadFile(envVal); err == nil {
+			if cid, csec, err := ParseGoogleCredentialsJSON(raw); err == nil {
+				return cid, csec, envVal
+			}
+		}
+	}
+
+	appDir := config.DefaultAppDataDir()
+	candidates := []string{
+		filepath.Join(appDir, "credentials.json"),
+		filepath.Join(".", "credentials.json"),
+	}
+	if cfg != nil && cfg.GoogleDrive.TokenVaultPath != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(cfg.GoogleDrive.TokenVaultPath), "credentials.json"))
+	}
+	if matches, err := filepath.Glob(filepath.Join(appDir, "client_secret*.json")); err == nil {
+		candidates = append(candidates, matches...)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		downloads := filepath.Join(home, "Downloads")
+		candidates = append(candidates, filepath.Join(downloads, "credentials.json"))
+		if matches, err := filepath.Glob(filepath.Join(downloads, "client_secret*.json")); err == nil {
+			candidates = append(candidates, matches...)
+		}
+	}
+
+	for _, c := range candidates {
+		raw, err := os.ReadFile(c)
+		if err != nil {
+			continue
+		}
+		if cid, csec, err := ParseGoogleCredentialsJSON(raw); err == nil {
+			return cid, csec, c
+		}
+	}
+	return "", "", ""
 }
 
 func NewDriveManager(cfg *config.Config, posDB, stateDB *sql.DB) *DriveManager {
@@ -213,10 +296,27 @@ func (m *DriveManager) AuthenticateViaWeb(ctx context.Context, clientID, clientS
 	} else {
 		clientID = m.Cfg.GoogleDrive.ClientID
 	}
+	if clientID == "" {
+		if envCID := strings.TrimSpace(os.Getenv("ARONIUM_GDRIVE_CLIENT_ID")); envCID != "" {
+			clientID = envCID
+			m.Cfg.GoogleDrive.ClientID = envCID
+		}
+	}
 	if clientSecret != "" {
 		_ = config.SaveSecret("gdrive_client_secret", clientSecret)
 	} else {
 		clientSecret = config.LoadSecret("gdrive_client_secret", "ARONIUM_GDRIVE_CLIENT_SECRET")
+	}
+	if clientID == "" || clientSecret == "" {
+		detCID, detSecret, _ := AutoDetectGoogleCredentialsJSON(m.Cfg)
+		if clientID == "" && detCID != "" {
+			clientID = detCID
+			m.Cfg.GoogleDrive.ClientID = detCID
+		}
+		if clientSecret == "" && detSecret != "" {
+			clientSecret = detSecret
+			_ = config.SaveSecret("gdrive_client_secret", detSecret)
+		}
 	}
 
 	port := m.Cfg.GoogleDrive.OAuthCallbackPort
@@ -264,11 +364,22 @@ func (m *DriveManager) AuthenticateViaWeb(ctx context.Context, clientID, clientS
 		fmt.Fprint(w, webAuthPortalHTML(clientID, redirectURI, oauthState))
 	})
 
-	// Starts Google OAuth 2.0 consent redirect after saving Client ID & Client Secret from browser form
+	// Starts Google OAuth 2.0 consent redirect after saving Client ID & Client Secret (or parsed credentials.json)
 	mux.HandleFunc("/oauth2/start", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		rawCredsJSON := strings.TrimSpace(r.FormValue("credentials_json"))
 		formCID := strings.TrimSpace(r.FormValue("client_id"))
 		formSecret := strings.TrimSpace(r.FormValue("client_secret"))
+		if rawCredsJSON != "" {
+			if jCID, jSec, jErr := ParseGoogleCredentialsJSON([]byte(rawCredsJSON)); jErr == nil {
+				if formCID == "" {
+					formCID = jCID
+				}
+				if formSecret == "" {
+					formSecret = jSec
+				}
+			}
+		}
 		if formCID != "" {
 			clientID = formCID
 			m.Cfg.GoogleDrive.ClientID = formCID
@@ -403,7 +514,11 @@ func (m *DriveManager) AuthenticateViaWeb(ctx context.Context, clientID, clientS
 	}()
 
 	if autoOpenBrowser {
-		_ = OpenBrowser(baseURL)
+		openURL := baseURL
+		if m.PreferDirectRedirect && clientID != "" {
+			openURL = baseURL + "/?direct_redirect=1"
+		}
+		_ = OpenBrowser(openURL)
 	}
 
 	select {
@@ -820,59 +935,189 @@ func writeCSVAtomic(destPath string, rows [][]string) error {
 }
 
 func webAuthPortalHTML(clientID, redirectURI, state string) string {
+	escClientID := html.EscapeString(clientID)
+	escRedirectURI := html.EscapeString(redirectURI)
+	escState := html.EscapeString(state)
+
+	oneClickSection := ""
+	manualOpenAttr := " open"
+	if strings.TrimSpace(clientID) != "" {
+		manualOpenAttr = ""
+		oneClickSection = fmt.Sprintf(`
+  <div class="oneclick-box">
+    <div style="font-size: 13px; color: #a7f3d0; font-weight: 700; margin-bottom: 6px;">
+      ✓ Aplicación lista para conectar en 1 clic
+    </div>
+    <p style="margin: 0 0 12px 0; font-size: 13.5px; color: #e2e8f0;">
+      Ya hay credenciales OAuth configuradas. Haz clic en el botón verde para iniciar sesión directamente con tu cuenta de Google:
+    </p>
+    <a class="btn btn-sec" style="text-decoration: none; margin-top: 0; font-size: 15px;" href="/?direct_redirect=1">
+      Conectar con Google Drive (1 Clic)
+    </a>
+  </div>`)
+	}
+
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8"/>
-<title>Aronium Utility — Conexión Web con Google Drive & Sheets</title>
+<title>Aronium Utility — Conexión Web con Google Drive &amp; Sheets</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 32px; display: flex; justify-content: center; }
-  .card { max-width: 640px; width: 100%%; background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 28px 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); }
-  h1 { margin-top: 0; font-size: 22px; color: #38bdf8; }
-  p { color: #cbd5e1; line-height: 1.5; font-size: 14px; }
-  label { display: block; font-size: 13px; font-weight: 600; color: #94a3b8; margin-top: 14px; margin-bottom: 6px; }
-  input[type=text], input[type=password] { width: 100%%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #f8fafc; font-size: 14px; }
-  .btn { display: inline-block; margin-top: 18px; width: 100%%; padding: 12px 18px; border-radius: 8px; border: none; background: #0284c7; color: white; font-weight: 700; font-size: 14px; cursor: pointer; text-align: center; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 28px 16px; display: flex; justify-content: center; }
+  .card { max-width: 650px; width: 100%%; background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 26px 30px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); }
+  h1 { margin: 4px 0 8px 0; font-size: 22px; color: #38bdf8; }
+  p { color: #cbd5e1; line-height: 1.5; font-size: 13.5px; }
+  label { display: block; font-size: 12.5px; font-weight: 600; color: #94a3b8; margin-top: 12px; margin-bottom: 5px; }
+  .label-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; margin-bottom: 5px; }
+  .label-row label { margin: 0; }
+  input[type=text], input[type=password] { width: 100%%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #f8fafc; font-size: 13.5px; }
+  .btn { display: inline-block; box-sizing: border-box; margin-top: 16px; width: 100%%; padding: 11px 16px; border-radius: 8px; border: none; background: #0284c7; color: white; font-weight: 700; font-size: 14px; cursor: pointer; text-align: center; }
   .btn:hover { background: #0369a1; }
-  .btn-sec { background: #10b981; }
-  .btn-sec:hover { background: #059669; }
-  .divider { margin: 22px 0; border-top: 1px solid #334155; }
-  .badge { display: inline-block; background: #064e3b; color: #6ee7b7; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
-  code { background: #0f172a; padding: 2px 6px; border-radius: 4px; color: #7dd3fc; font-size: 12px; }
+  .btn-sec { background: #10b981; color: #052e16; }
+  .btn-sec:hover { background: #34d399; }
+  .btn-mini { padding: 4px 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #7dd3fc; font-size: 11.5px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .btn-mini:hover { background: #1e293b; border-color: #38bdf8; }
+  .uri-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; margin-top: 8px; flex-wrap: wrap; }
+  .oneclick-box { background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; border-radius: 10px; padding: 16px; margin: 14px 0 18px 0; }
+  .json-drop { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: rgba(56, 189, 248, 0.08); border: 1px dashed #38bdf8; border-radius: 10px; padding: 12px 14px; margin-top: 10px; }
+  .api-links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  details { margin-top: 14px; border: 1px solid #334155; border-radius: 10px; padding: 10px 14px; background: rgba(15, 23, 42, 0.55); }
+  summary { cursor: pointer; font-weight: 700; font-size: 13px; color: #bae6fd; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  .badge { display: inline-block; background: #064e3b; color: #6ee7b7; padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; margin-bottom: 6px; }
+  code { background: #0f172a; padding: 2px 6px; border-radius: 4px; color: #7dd3fc; font-size: 12px; word-break: break-all; }
+  a.inline-link { color: #38bdf8; text-decoration: none; font-size: 12px; font-weight: 600; }
+  a.inline-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
 <div class="card">
-  <span class="badge">Aronium Utility v1.0 — Sincronizador de Inventario y Cuentas de Crédito</span>
-  <h1>Conectar Google Drive y Google Sheets</h1>
-  <p>Vincula tu cuenta de Google para sincronizar automáticamente la tabla de <strong>Inventario Vivo</strong> y las <strong>Cuentas de Crédito por Cliente</strong> cada vez que registres una venta en Aronium Lite.</p>
+  <span class="badge">Aronium Utility — Google Drive &amp; Sheets</span>
+  <h1>Conectar con Google Drive</h1>
+  <p>Vincula tu cuenta de Google para respaldar automáticamente tu tabla de <strong>Cuentas</strong> e <strong>Inventario Neto</strong>.</p>
+  %s
+  <details%s>
+    <summary>Configurar conexión de Google Cloud (Subir credentials.json o pegar Client ID)</summary>
+    <form id="oauthStartForm" method="POST" action="/oauth2/start" style="margin-top: 10px;">
+      <input type="hidden" name="credentials_json" id="credentialsJsonField" value="" />
 
-  <form method="POST" action="/oauth2/start">
-    <label>Opción A — Flujo OAuth 2.0 Web Oficial de Google Cloud</label>
-    <p style="font-size:12px; margin-top:2px;">Callback URI local: <code>%s</code></p>
-    <label>Google OAuth Client ID</label>
-    <input type="text" name="client_id" value="%s" placeholder="1234567890-abc.apps.googleusercontent.com" />
-    <label>Google OAuth Client Secret</label>
-    <input type="password" name="client_secret" placeholder="GOCSPX-..." />
-    <button type="submit" class="btn">1. Continuar a Inicio de Sesión de Google (OAuth 2.0 Web)</button>
-  </form>
+      <div class="json-drop">
+        <div style="font-size: 12.5px; color: #e2e8f0;">
+          <strong>Forma más rápida:</strong> carga tu archivo <code>credentials.json</code> de Google Cloud
+          <div id="jsonStatus" style="font-size: 11.5px; color: #94a3b8; margin-top: 2px;">Extrae Client ID y Client Secret automáticamente sin copiar y pegar.</div>
+        </div>
+        <label for="credFileInput" class="btn-mini" style="margin: 0; padding: 7px 12px; font-size: 12px;">
+          Cargar credentials.json
+        </label>
+        <input type="file" id="credFileInput" accept=".json,application/json" style="display:none;" />
+      </div>
 
-  <div class="divider"></div>
+      <div class="uri-bar">
+        <div style="font-size: 12px;">
+          <span style="color: #94a3b8;">URI de redireccionamiento:</span><br/>
+          <code id="redirectUriCode">%s</code>
+        </div>
+        <button type="button" class="btn-mini" id="copyUriBtn" onclick="copyRedirectURI()">Copiar URI</button>
+      </div>
 
-  <form method="POST" action="/oauth2/callback">
-    <label>Opción B — Vinculación Rápida por Token OAuth / Playground / Cuenta</label>
-    <input type="hidden" name="state" value="%s" />
-    <label>Correo de la Cuenta de Google Drive</label>
-    <input type="text" name="account_email" placeholder="mitienda@gmail.com" />
-    <label>Access Token de Google Drive / Sheets</label>
-    <input type="password" name="access_token" placeholder="ya29.a0..." />
-    <label>Refresh Token (Opcional, para renovación automática)</label>
-    <input type="password" name="refresh_token" placeholder="1//0g..." />
-    <button type="submit" class="btn btn-sec">2. Vincular y Guardar Credenciales Cifradas (AES-256-GCM)</button>
-  </form>
+      <div class="api-links">
+        <a class="btn-mini" href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener noreferrer">1. Activar Drive API ↗</a>
+        <a class="btn-mini" href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" target="_blank" rel="noopener noreferrer">2. Activar Sheets API ↗</a>
+        <a class="btn-mini" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">3. Abrir Credenciales OAuth ↗</a>
+      </div>
+
+      <div class="label-row">
+        <label for="clientIdInput">Google OAuth Client ID</label>
+        <a class="inline-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Obtener en Google Cloud ↗</a>
+      </div>
+      <input type="text" id="clientIdInput" name="client_id" value="%s" placeholder="1234567890-abc.apps.googleusercontent.com" />
+
+      <div class="label-row">
+        <label for="clientSecretInput">Google OAuth Client Secret</label>
+        <a class="inline-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Ver en Credenciales ↗</a>
+      </div>
+      <input type="password" id="clientSecretInput" name="client_secret" placeholder="GOCSPX-..." />
+
+      <button type="submit" class="btn">Continuar a Inicio de Sesión de Google (OAuth 2.0)</button>
+    </form>
+  </details>
+
+  <details>
+    <summary>¿Solo quieres probar rápido? (Avanzado)</summary>
+    <form method="POST" action="/oauth2/callback" style="margin-top: 10px;">
+      <input type="hidden" name="state" value="%s" />
+      <p style="font-size: 12px; margin: 0 0 8px 0;">
+        Si deseas pegar tokens temporales manualmente desde OAuth Playground,
+        <a class="inline-link" href="https://developers.google.com/oauthplayground/" target="_blank" rel="noopener noreferrer">abre Google OAuth 2.0 Playground ↗</a>
+        y autoriza los alcances <code>drive.file</code> y <code>spreadsheets</code>.
+      </p>
+      <label for="accountEmailInput">Correo de la Cuenta de Google Drive</label>
+      <input type="text" id="accountEmailInput" name="account_email" placeholder="mitienda@gmail.com" />
+      <label for="accessTokenInput">Access Token de Google Drive / Sheets</label>
+      <input type="password" id="accessTokenInput" name="access_token" placeholder="ya29.a0..." />
+      <label for="refreshTokenInput">Refresh Token (Opcional, para renovación automática)</label>
+      <input type="password" id="refreshTokenInput" name="refresh_token" placeholder="1//0g..." />
+      <button type="submit" class="btn btn-sec">Vincular con Token y Guardar Cifrado</button>
+    </form>
+  </details>
 </div>
+
+<script>
+function copyRedirectURI() {
+  var uri = document.getElementById('redirectUriCode').textContent || '';
+  var btn = document.getElementById('copyUriBtn');
+  var done = function() {
+    btn.textContent = '¡Copiado! ✓';
+    setTimeout(function() { btn.textContent = 'Copiar URI'; }, 2000);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(uri).then(done).catch(function() { fallbackCopy(uri, done); });
+  } else {
+    fallbackCopy(uri, done);
+  }
+}
+function fallbackCopy(text, cb) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  if (cb) cb();
+}
+
+document.getElementById('credFileInput').addEventListener('change', function(ev) {
+  var file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  var statusEl = document.getElementById('jsonStatus');
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var raw = String(e.target.result || '');
+      var parsed = JSON.parse(raw);
+      var node = parsed.installed || parsed.web || parsed;
+      if (!node || !node.client_id) {
+        statusEl.style.color = '#fca5a5';
+        statusEl.textContent = 'El archivo no contiene un client_id válido de Google Cloud.';
+        return;
+      }
+      document.getElementById('clientIdInput').value = node.client_id || '';
+      if (node.client_secret) {
+        document.getElementById('clientSecretInput').value = node.client_secret;
+      }
+      document.getElementById('credentialsJsonField').value = raw;
+      statusEl.style.color = '#6ee7b7';
+      statusEl.textContent = '✓ Credenciales extraídas de ' + file.name + '. ¡Haz clic en "Continuar a Inicio de Sesión de Google"!';
+    } catch (err) {
+      statusEl.style.color = '#fca5a5';
+      statusEl.textContent = 'No se pudo leer el JSON: ' + err.message;
+    }
+  };
+  reader.readAsText(file);
+});
+</script>
 </body>
-</html>`, redirectURI, clientID, state)
+</html>`, oneClickSection, manualOpenAttr, escRedirectURI, escClientID, escState)
 }
 
 func webAuthSuccessHTML(email string) string {

@@ -230,6 +230,7 @@ export interface ConfigInfoResponse {
 
 export interface DriveStatus {
   connected: boolean;
+  client_id_configured?: boolean;
   sync_dir: string;
   master_workbook_name: string;
   spreadsheet_id?: string;

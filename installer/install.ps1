@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================================" -ForegroundColor Cyan
-Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.6 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
+Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.7 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\AroniumUtility"

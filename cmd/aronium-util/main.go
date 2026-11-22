@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.6"
+const Version = "1.2.7"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -390,12 +390,31 @@ func runDrive(args []string) error {
 	fs := flag.NewFlagSet("drive", flag.ContinueOnError)
 	clientID := fs.String("client-id", "", "Google Cloud OAuth 2.0 Client ID")
 	clientSecret := fs.String("client-secret", "", "Google Cloud OAuth 2.0 Client Secret")
+	credentialsJSON := fs.String("credentials-json", "", "Ruta a credentials.json descargado de Google Cloud")
+	oneClick := fs.Bool("one-click", true, "Redirigir en 1 clic a Google cuando Client ID ya esté configurado")
 	timeoutSec := fs.Int("timeout", 180, "Tiempo máximo de espera para autenticación web (segundos)")
 	noBrowser := fs.Bool("no-browser", false, "No abrir el navegador automáticamente (mostrar URL en consola)")
 	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 	cfg, cfgPath, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
+	}
+
+	if strings.TrimSpace(*credentialsJSON) != "" {
+		rawCreds, err := os.ReadFile(strings.TrimSpace(*credentialsJSON))
+		if err != nil {
+			return fmt.Errorf("no se pudo leer credentials.json (%s): %w", *credentialsJSON, err)
+		}
+		jCID, jSecret, err := sync.ParseGoogleCredentialsJSON(rawCreds)
+		if err != nil {
+			return err
+		}
+		if *clientID == "" {
+			*clientID = jCID
+		}
+		if *clientSecret == "" {
+			*clientSecret = jSecret
+		}
 	}
 
 	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
@@ -407,6 +426,7 @@ func runDrive(args []string) error {
 	switch sub {
 	case "login", "connect", "auth", "web":
 		mgr := sync.NewDriveManager(cfg, nil, stateConn)
+		mgr.PreferDirectRedirect = *oneClick
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutSec)*time.Second)
 		defer cancel()
 
@@ -441,9 +461,14 @@ func runDrive(args []string) error {
 		mgr := sync.NewDriveManager(cfg, nil, stateConn)
 		tok, err := mgr.LoadToken()
 		syncDir := filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName)
+		detCID, _, _ := sync.AutoDetectGoogleCredentialsJSON(cfg)
+		clientConfigured := strings.TrimSpace(cfg.GoogleDrive.ClientID) != "" ||
+			strings.TrimSpace(os.Getenv("ARONIUM_GDRIVE_CLIENT_ID")) != "" ||
+			detCID != ""
 		if *jsonOut {
 			statusMap := map[string]any{
 				"connected":            err == nil && tok != nil && tok.AccessToken != "",
+				"client_id_configured": clientConfigured,
 				"sync_dir":             syncDir,
 				"master_workbook_name": cfg.GoogleDrive.MasterWorkbookName,
 				"spreadsheet_id":       cfg.GoogleDrive.MasterSpreadsheetID,
