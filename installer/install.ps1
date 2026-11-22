@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================================" -ForegroundColor Cyan
-Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.1 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
+Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.2 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\AroniumUtility"
@@ -26,6 +26,19 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "GoogleDriveSync")
 
 $DestCLIBin = Join-Path $InstallDir "aronium-util.exe"
 $DestUIBin  = Join-Path $InstallDir "aronium-utility-ui.exe"
+
+Get-Process -Name "aronium-utility-ui","aronium-util" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 400
+
+$BackupSnap = Join-Path $DataDir "backups\cuentas_pre_install_snapshot.db"
+$DriveBackup = Join-Path $DataDir "GoogleDriveSync\AroniumUtility\Cuentas_Credito\cuentas_backup.db"
+if (Test-Path $AccountsDb) {
+    Copy-Item -Path $AccountsDb -Destination $BackupSnap -Force
+} elseif (Test-Path $BackupSnap) {
+    Copy-Item -Path $BackupSnap -Destination $AccountsDb -Force
+} elseif (Test-Path $DriveBackup) {
+    Copy-Item -Path $DriveBackup -Destination $AccountsDb -Force
+}
 
 Copy-Item -Path (Join-Path $PSScriptRoot "aronium-util.exe") -Destination $DestCLIBin -Force
 if (Test-Path (Join-Path $PSScriptRoot "aronium-utility-ui.exe")) {

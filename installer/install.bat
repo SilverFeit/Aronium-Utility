@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 echo ==========================================================================
-echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.1 (CLI + Aronium Utility UI)
+echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.2 (CLI + Aronium Utility UI)
 echo ==========================================================================
 
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\AroniumUtility"
@@ -24,7 +24,17 @@ if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 if not exist "%DATA_DIR%\backups" mkdir "%DATA_DIR%\backups"
 if not exist "%DATA_DIR%\GoogleDriveSync" mkdir "%DATA_DIR%\GoogleDriveSync"
 
-echo [2/5] Copiando ejecutables aronium-util.exe (CLI) y aronium-utility-ui.exe (UI)...
+echo [2/5] Cerrando procesos activos y copiando ejecutables aronium-util.exe y aronium-utility-ui.exe...
+taskkill /F /T /IM aronium-utility-ui.exe >nul 2>&1
+taskkill /F /T /IM aronium-util.exe >nul 2>&1
+sc stop AroniumUtilityService >nul 2>&1
+if exist "%DATA_DIR%\cuentas.db" (
+    copy /Y "%DATA_DIR%\cuentas.db" "%DATA_DIR%\backups\cuentas_pre_install_snapshot.db" >nul 2>&1
+) else if exist "%DATA_DIR%\backups\cuentas_pre_install_snapshot.db" (
+    copy /Y "%DATA_DIR%\backups\cuentas_pre_install_snapshot.db" "%DATA_DIR%\cuentas.db" >nul 2>&1
+) else if exist "%DATA_DIR%\GoogleDriveSync\AroniumUtility\Cuentas_Credito\cuentas_backup.db" (
+    copy /Y "%DATA_DIR%\GoogleDriveSync\AroniumUtility\Cuentas_Credito\cuentas_backup.db" "%DATA_DIR%\cuentas.db" >nul 2>&1
+)
 if exist "%~dp0aronium-util.exe" (
     copy /Y "%~dp0aronium-util.exe" "%INSTALL_DIR%\aronium-util.exe" >nul
 )

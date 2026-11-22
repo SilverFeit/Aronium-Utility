@@ -1100,4 +1100,26 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	if fkRows.Next() {
 		t.Fatalf("unexpected foreign_key_check violation after v1->v2 migration")
 	}
+	_ = fkRows.Close()
+	_ = accMgr.Close()
+
+	// 6. Simulate program uninstall / deletion of cuentas.db + reinstall recovery from automatic snapshot
+	_ = os.Remove(accDBPath)
+	_ = os.Remove(accDBPath + "-wal")
+	_ = os.Remove(accDBPath + "-shm")
+
+	recoveredMgr, err := accounts.NewManager(accDBPath)
+	if err != nil {
+		t.Fatalf("NewManager after simulated uninstall/reinstall failed: %v", err)
+	}
+	defer recoveredMgr.Close()
+
+	recAna, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Ana Gómez")
+	if err != nil || recAna.CurrentBalance != 3600 {
+		t.Fatalf("expected Ana balance 3600 to be preserved/recovered after reinstall, got %+v (err=%v)", recAna, err)
+	}
+	recCarlos, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
+	if err != nil || recCarlos.CurrentBalance != 5000 {
+		t.Fatalf("expected Carlos balance 5000 to be preserved/recovered after reinstall, got %+v (err=%v)", recCarlos, err)
+	}
 }

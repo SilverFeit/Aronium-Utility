@@ -2,6 +2,18 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.2] — 2026-11-22
+
+### Fixed
+- **Automatic Process Termination Before Update/Uninstall (`cmd/aronium-util-setup`, `installer/*.bat`, `installer/install.ps1`):**
+  - Resolves the Windows file-lock error (`open ...\aronium-utility-ui.exe: El proceso no tiene acceso al archivo porque está siendo utilizado por otro proceso`) when running the installer while **Aronium Utility UI** or `aronium-util.exe watch` is open.
+  - The installer now automatically stops running `aronium-utility-ui.exe` and `aronium-util.exe` processes (`taskkill /F /T /IM` + PowerShell `Stop-Process`), uses an atomic `.old` rename fallback with retry (`writeExecutableSafely`), and automatically relaunches **Aronium Utility UI** if it was open prior to the update.
+- **Database & Account Preservation Across Uninstall / Reinstall (`internal/accounts`, `cmd/aronium-util-setup`):**
+  - Automatically maintains a hot SQLite snapshot (`backups/cuentas_pre_install_snapshot.db`) after every account creation, charge, or payment.
+  - Uninstalling removes only the program binaries in `%LOCALAPPDATA%\Programs\AroniumUtility`, preserving `%LOCALAPPDATA%\AroniumUtility\cuentas.db`, `aronium-util.yaml`, and backups intact—and automatically restores `cuentas.db` from local or Google Drive backups if `cuentas.db` was deleted before reinstalling.
+
+---
+
 ## [1.2.1] — 2026-11-22
 
 ### Fixed

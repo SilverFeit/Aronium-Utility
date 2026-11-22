@@ -197,6 +197,36 @@ func toSQLiteWALURI(path string) string {
 	return u.String()
 }
 
+// EnsureOrRecoverAccountsDBFile snapshots cuentas.db if present, or restores it automatically from
+// local/Drive backups if cuentas.db was deleted during an uninstall/reinstall cycle.
+func EnsureOrRecoverAccountsDBFile(accountsDBPath string) string {
+	baseDir := filepath.Dir(accountsDBPath)
+	snapPath := filepath.Join(baseDir, "backups", "cuentas_pre_install_snapshot.db")
+
+	if info, err := os.Stat(accountsDBPath); err == nil && info.Size() > 64 {
+		if raw, rErr := os.ReadFile(accountsDBPath); rErr == nil && len(raw) > 64 {
+			_ = os.MkdirAll(filepath.Dir(snapPath), 0755)
+			_ = os.WriteFile(snapPath, raw, 0644)
+		}
+		return ""
+	}
+
+	candidates := []string{
+		snapPath,
+		filepath.Join(baseDir, "GoogleDriveSync", "AroniumUtility", "Cuentas_Credito", "cuentas_backup.db"),
+		accountsDBPath + ".v1.bak",
+	}
+	for _, cand := range candidates {
+		if raw, err := os.ReadFile(cand); err == nil && len(raw) > 64 {
+			_ = os.MkdirAll(baseDir, 0755)
+			if wErr := os.WriteFile(accountsDBPath, raw, 0644); wErr == nil {
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
 // OpenAccountsDB opens or creates cuentas.db in WAL mode and runs automatic lossless schema migrations.
 func OpenAccountsDB(accountsDBPath string) (*sql.DB, error) {
 	conn, _, err := OpenAccountsDBWithReport(accountsDBPath)
@@ -211,6 +241,7 @@ func OpenAccountsDBWithReport(accountsDBPath string) (*sql.DB, *SchemaMigrationR
 	if err := os.MkdirAll(filepath.Dir(accountsDBPath), 0755); err != nil {
 		return nil, nil, err
 	}
+	EnsureOrRecoverAccountsDBFile(accountsDBPath)
 	conn, err := sql.Open("sqlite", toSQLiteWALURI(accountsDBPath))
 	if err != nil {
 		return nil, nil, err
@@ -709,6 +740,9 @@ func (m *Manager) CreateOrUpdateAccountWithItems(req CreateAccountRequest) (*Acc
 	}
 	tx = nil
 
+	snapPath := filepath.Join(filepath.Dir(m.DBPath), "backups", "cuentas_pre_install_snapshot.db")
+	_ = m.OnlineBackupAccountsDB(context.Background(), snapPath)
+
 	return m.GetAccount(accountKey)
 }
 
@@ -808,6 +842,9 @@ func (m *Manager) RecordMovement(req MovementRequest) (*AccountSummary, error) {
 		return nil, err
 	}
 	tx = nil
+
+	snapPath := filepath.Join(filepath.Dir(m.DBPath), "backups", "cuentas_pre_install_snapshot.db")
+	_ = m.OnlineBackupAccountsDB(context.Background(), snapPath)
 
 	return m.GetAccount(accountKey)
 }

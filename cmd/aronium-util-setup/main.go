@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
@@ -24,7 +25,7 @@ var embeddedUIBinary []byte
 //go:embed payload/app-icon.ico
 var embeddedAppIcon []byte
 
-const InstallerVersion = "1.2.1"
+const InstallerVersion = "1.2.2"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -118,7 +119,7 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		}
 	}
 
-	// 2. Extract or copy BOTH executables: aronium-util.exe (CLI) and aronium-utility-ui.exe (Desktop UI)
+	// 2. Stop running instances of aronium-utility-ui.exe and aronium-util.exe so files are unlocked for update
 	cliBinName := "aronium-util"
 	uiBinName := "aronium-utility-ui"
 	if runtime.GOOS == "windows" {
@@ -127,6 +128,8 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 	}
 	destCLIBin := filepath.Join(installDir, cliBinName)
 	destUIBin := filepath.Join(installDir, uiBinName)
+
+	uiWasRunning := stopRunningAroniumProcesses()
 
 	fmt.Printf("[2/5] Instalando ejecutable del CLI (%s) y ejecutable de Aronium Utility UI (%s)...\n", destCLIBin, destUIBin)
 
@@ -140,7 +143,7 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		}
 	}
 	if len(cliPayload) > 0 {
-		if err := os.WriteFile(destCLIBin, cliPayload, 0755); err != nil {
+		if err := writeExecutableSafely(destCLIBin, cliPayload); err != nil {
 			return fmt.Errorf("no se pudo escribir %s: %w", destCLIBin, err)
 		}
 	}
@@ -152,7 +155,7 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		}
 	}
 	if len(uiPayload) > 0 {
-		if err := os.WriteFile(destUIBin, uiPayload, 0755); err != nil {
+		if err := writeExecutableSafely(destUIBin, uiPayload); err != nil {
 			return fmt.Errorf("no se pudo escribir %s: %w", destUIBin, err)
 		}
 	}
@@ -164,15 +167,17 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		_ = os.WriteFile(destIconPath, icoData, 0644)
 	}
 
-	// 3. Detect previous installation & preserve user configuration / custom database paths
+	// 3. Detect previous installation or post-uninstall database & preserve user configuration / custom database paths
 	cfgPath := filepath.Join(dataDir, "aronium-util.yaml")
 	stateDBPath := filepath.Join(dataDir, "aronium_utility_state.db")
 	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
 
+	preserveOrRecoverAccountsDB(dataDir, accountsDBPath)
+
 	_, cfgErr := os.Stat(cfgPath)
 	_, accErr := os.Stat(accountsDBPath)
-	_, binErr := os.Stat(destCLIBin)
-	isUpgrade := cfgErr == nil || accErr == nil || binErr == nil
+	_, stateErr := os.Stat(stateDBPath)
+	isUpgrade := cfgErr == nil || accErr == nil || stateErr == nil || uiWasRunning
 
 	var cfg *config.Config
 	if isUpgrade {
@@ -275,12 +280,107 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		_ = cmd.Run()
 	}
 
-	if launchUI && len(uiPayload) > 1024 {
+	if (launchUI || uiWasRunning) && len(uiPayload) > 1024 {
 		fmt.Println("[*] Abriendo Aronium Utility UI...")
 		_ = exec.Command(destUIBin).Start()
 	}
 
 	return nil
+}
+
+// stopRunningAroniumProcesses terminates running instances of aronium-utility-ui and aronium-util
+// before replacing or removing executables on Windows so file locks are released cleanly.
+func stopRunningAroniumProcesses() (uiWasRunning bool) {
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("tasklist.exe", "/FI", "IMAGENAME eq aronium-utility-ui.exe", "/NH").CombinedOutput(); err == nil {
+			if strings.Contains(strings.ToLower(string(out)), "aronium-utility-ui.exe") {
+				uiWasRunning = true
+			}
+		}
+		var cliRunning bool
+		if out, err := exec.Command("tasklist.exe", "/FI", "IMAGENAME eq aronium-util.exe", "/NH").CombinedOutput(); err == nil {
+			if strings.Contains(strings.ToLower(string(out)), "aronium-util.exe") {
+				cliRunning = true
+			}
+		}
+		if uiWasRunning || cliRunning {
+			fmt.Println("[*] Cerrando procesos activos de Aronium Utility para permitir la actualización...")
+		}
+		_ = exec.Command("sc.exe", "stop", "AroniumUtilityService").Run()
+		_ = exec.Command("taskkill.exe", "/F", "/T", "/IM", "aronium-utility-ui.exe").Run()
+		_ = exec.Command("taskkill.exe", "/F", "/T", "/IM", "aronium-util.exe").Run()
+		_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+			"Get-Process -Name 'aronium-utility-ui','aronium-util' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue").Run()
+		time.Sleep(450 * time.Millisecond)
+		return uiWasRunning
+	}
+	return false
+}
+
+// writeExecutableSafely writes an executable to destPath, retrying with process termination and
+// Windows .old rename fallback if the old binary handle is still being released by the OS.
+func writeExecutableSafely(destPath string, payload []byte) error {
+	oldPath := destPath + ".old"
+	tmpPath := destPath + ".new"
+	_ = os.Remove(oldPath)
+	_ = os.Remove(tmpPath)
+
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		if attempt > 0 {
+			stopRunningAroniumProcesses()
+			time.Sleep(350 * time.Millisecond)
+		}
+
+		// Direct write if unlocked
+		if err := os.WriteFile(destPath, payload, 0755); err == nil {
+			_ = os.Remove(oldPath)
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		// Windows atomic rename fallback: rename existing locked/closing .exe to .old, then place new binary
+		if err := os.WriteFile(tmpPath, payload, 0755); err == nil {
+			_ = os.Remove(oldPath)
+			_ = os.Rename(destPath, oldPath)
+			if rErr := os.Rename(tmpPath, destPath); rErr == nil {
+				_ = os.Remove(oldPath)
+				return nil
+			} else {
+				lastErr = rErr
+			}
+		}
+	}
+	_ = os.Remove(tmpPath)
+	return lastErr
+}
+
+// preserveOrRecoverAccountsDB backs up an existing cuentas.db before upgrade, or restores it automatically
+// from local/Drive backups if the program was uninstalled/deleted and reinstalled.
+func preserveOrRecoverAccountsDB(dataDir, accountsDBPath string) {
+	backupSnap := filepath.Join(dataDir, "backups", "cuentas_pre_install_snapshot.db")
+	if raw, err := os.ReadFile(accountsDBPath); err == nil && len(raw) > 0 {
+		_ = os.MkdirAll(filepath.Dir(backupSnap), 0755)
+		_ = os.WriteFile(backupSnap, raw, 0644)
+		return
+	}
+
+	// If cuentas.db is missing on reinstall, search known backup locations to recover all accounts automatically
+	candidates := []string{
+		backupSnap,
+		filepath.Join(dataDir, "GoogleDriveSync", "AroniumUtility", "Cuentas_Credito", "cuentas_backup.db"),
+		accountsDBPath + ".v1.bak",
+	}
+	for _, cand := range candidates {
+		if raw, err := os.ReadFile(cand); err == nil && len(raw) > 0 {
+			_ = os.MkdirAll(filepath.Dir(accountsDBPath), 0755)
+			if err := os.WriteFile(accountsDBPath, raw, 0644); err == nil {
+				fmt.Printf("[Recovery] Base de cuentas restaurada automáticamente desde respaldo previo (%s).\n", cand)
+				return
+			}
+		}
+	}
 }
 
 func configureEnvironmentVariables(installDir, dataDir string, vars map[string]string) error {
@@ -336,6 +436,12 @@ func createWindowsDesktopShortcut(uiExePath string) {
 }
 
 func runUninstall(installDir, dataDir string) error {
+	stopRunningAroniumProcesses()
+
+	// Create a safety snapshot of cuentas.db before removing program binaries so reinstalls never lose data
+	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
+	preserveOrRecoverAccountsDB(dataDir, accountsDBPath)
+
 	cliBinName := "aronium-util"
 	uiBinName := "aronium-utility-ui"
 	if runtime.GOOS == "windows" {
@@ -343,7 +449,9 @@ func runUninstall(installDir, dataDir string) error {
 		uiBinName = "aronium-utility-ui.exe"
 	}
 	_ = os.Remove(filepath.Join(installDir, cliBinName))
+	_ = os.Remove(filepath.Join(installDir, cliBinName+".old"))
 	_ = os.Remove(filepath.Join(installDir, uiBinName))
+	_ = os.Remove(filepath.Join(installDir, uiBinName+".old"))
 	_ = os.Remove(filepath.Join(installDir, "app-icon.ico"))
 	_ = os.Remove(filepath.Join(dataDir, "aronium-env.profile"))
 
@@ -357,5 +465,6 @@ func runUninstall(installDir, dataDir string) error {
 		}
 		_ = exec.Command("reg.exe", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "AroniumUtilityService", "/f").Run()
 	}
+	fmt.Printf("[OK] Bases de datos y cuentas preservadas intactas en '%s' para futuras reinstalaciones.\n", dataDir)
 	return nil
 }
