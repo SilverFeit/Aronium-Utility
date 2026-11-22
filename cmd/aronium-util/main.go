@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.7"
+const Version = "1.2.8"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

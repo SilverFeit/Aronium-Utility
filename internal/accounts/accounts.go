@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
 	_ "modernc.org/sqlite"
@@ -102,7 +103,70 @@ type SchemaMigrationReport struct {
 	ItemsPreserved     int    `json:"items_preserved"`
 }
 
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
+
+// LocalLocation returns the active local timezone (Windows/OS local timezone by default,
+// or overridden via ARONIUM_TIMEZONE such as "America/Bogota" or "UTC-5").
+func LocalLocation() *time.Location {
+	tz := strings.TrimSpace(os.Getenv("ARONIUM_TIMEZONE"))
+	if tz == "" || strings.EqualFold(tz, "local") {
+		return time.Local
+	}
+	if loc, err := time.LoadLocation(tz); err == nil && loc != nil {
+		return loc
+	}
+	clean := strings.TrimPrefix(strings.ToUpper(tz), "UTC")
+	if clean != "" && (clean[0] == '+' || clean[0] == '-') {
+		sign := 1
+		if clean[0] == '-' {
+			sign = -1
+		}
+		rest := clean[1:]
+		hours, mins := 0, 0
+		if strings.Contains(rest, ":") {
+			_, _ = fmt.Sscanf(rest, "%d:%d", &hours, &mins)
+		} else {
+			_, _ = fmt.Sscanf(rest, "%d", &hours)
+		}
+		return time.FixedZone(tz, sign*(hours*3600+mins*60))
+	}
+	return time.Local
+}
+
+// LocalNow returns the current wall-clock time in LocalLocation().
+func LocalNow() time.Time {
+	return time.Now().In(LocalLocation())
+}
+
+// LocalTimestampNow returns the current local date-time formatted as YYYY-MM-DD HH:MM:SS.
+func LocalTimestampNow() string {
+	return LocalNow().Format("2006-01-02 15:04:05")
+}
+
+// ConvertUTCToLocalString converts a naive SQLite UTC timestamp (from legacy CURRENT_TIMESTAMP) to local time.
+func ConvertUTCToLocalString(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	loc := LocalLocation()
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.In(loc).Format("2006-01-02 15:04:05")
+		}
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t.In(loc).Format("2006-01-02 15:04:05")
+		}
+	}
+	return s
+}
 
 // AccountsLedgerReport summarizes all customer accounts in cuentas.db.
 type AccountsLedgerReport struct {
@@ -272,7 +336,7 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 	_ = conn.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cuentas';`).Scan(&cuentasExists)
 
 	if cuentasExists == 0 {
-		if err := createFreshV2Schema(conn); err != nil {
+		if err := createFreshV3Schema(conn); err != nil {
 			return nil, err
 		}
 		return &SchemaMigrationReport{
@@ -307,22 +371,20 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 			`CREATE INDEX IF NOT EXISTS idx_movimientos_cuenta ON movimientos(cuenta_id);`,
 			`CREATE INDEX IF NOT EXISTS idx_movitems_mov ON movimiento_items(movimiento_id);`,
 			`CREATE INDEX IF NOT EXISTS idx_movitems_prod ON movimiento_items(aronium_product_id);`,
-			`PRAGMA user_version = 2;`,
 		} {
 			if _, err := conn.Exec(idxStmt); err != nil {
-				return nil, fmt.Errorf("v2 index migration failed: %w", err)
+				return nil, fmt.Errorf("v2/v3 index check failed: %w", err)
 			}
+		}
+		if userVer < CurrentSchemaVersion {
+			return migrateV2UTCToV3LocalTime(conn, accountsDBPath, userVer)
 		}
 		var accCnt, movCnt, itemCnt int
 		_ = conn.QueryRow(`SELECT COUNT(*) FROM cuentas;`).Scan(&accCnt)
 		_ = conn.QueryRow(`SELECT COUNT(*) FROM movimientos;`).Scan(&movCnt)
 		_ = conn.QueryRow(`SELECT COUNT(*) FROM movimiento_items;`).Scan(&itemCnt)
-		prev := userVer
-		if prev < CurrentSchemaVersion {
-			prev = CurrentSchemaVersion
-		}
 		return &SchemaMigrationReport{
-			PreviousVersion:    prev,
+			PreviousVersion:    userVer,
 			CurrentVersion:     CurrentSchemaVersion,
 			Migrated:           false,
 			AccountsPreserved:  accCnt,
@@ -404,21 +466,30 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 		}
 	}
 
-	for _, s := range v2DDLStatements() {
+	for _, s := range v3DDLStatements() {
 		if _, err := tx.Exec(s); err != nil {
-			return nil, fmt.Errorf("v2 schema creation failed: %w", err)
+			return nil, fmt.Errorf("v3 schema creation failed: %w", err)
 		}
 	}
 
+	nowLocal := LocalTimestampNow()
 	migratedKeys := make(map[string]string, len(legacyRows))
 	for _, r := range legacyRows {
 		fullID, idPrefix, idNumber := SplitCompoundID(r.ID, "", "")
 		accountKey := MakeAccountKey(fullID, r.Name)
 		migratedKeys[r.ID] = accountKey
+		createdLocal := ConvertUTCToLocalString(r.CreatedAt)
+		if createdLocal == "" {
+			createdLocal = nowLocal
+		}
+		updatedLocal := ConvertUTCToLocalString(r.UpdatedAt)
+		if updatedLocal == "" {
+			updatedLocal = nowLocal
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO cuentas (account_key, id, id_prefix, id_number, nombre, telefono, metodo_pago, tope_credito, descripcion, estado, creado_en, actualizado_en)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP), COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP));
-		`, accountKey, fullID, idPrefix, idNumber, r.Name, r.Phone, r.PaymentMethod, r.CreditLimit, r.Description, r.Status, r.CreatedAt, r.UpdatedAt); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+		`, accountKey, fullID, idPrefix, idNumber, r.Name, r.Phone, r.PaymentMethod, r.CreditLimit, r.Description, r.Status, createdLocal, updatedLocal); err != nil {
 			return nil, fmt.Errorf("restoring legacy account '%s' failed: %w", r.ID, err)
 		}
 	}
@@ -429,6 +500,27 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 		}
 	}
 
+	type legacyMovDate struct {
+		ID   int64
+		Date string
+	}
+	var legacyMovDates []legacyMovDate
+	dRows, dErr := tx.Query(`SELECT id, COALESCE(CAST(fecha AS TEXT), '') FROM tmp_v1_movimientos;`)
+	if dErr == nil {
+		for dRows.Next() {
+			var md legacyMovDate
+			if sErr := dRows.Scan(&md.ID, &md.Date); sErr == nil {
+				legacyMovDates = append(legacyMovDates, md)
+			}
+		}
+		_ = dRows.Close()
+	}
+	for _, md := range legacyMovDates {
+		if locDate := ConvertUTCToLocalString(md.Date); locDate != "" && locDate != md.Date {
+			_, _ = tx.Exec(`UPDATE tmp_v1_movimientos SET fecha = ? WHERE id = ?;`, locDate, md.ID)
+		}
+	}
+
 	restoreStmts := []string{
 		`INSERT INTO movimientos (id, cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha)
 		 SELECT id, cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha FROM tmp_v1_movimientos;`,
@@ -436,7 +528,7 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 		 SELECT id, movimiento_id, aronium_product_id, codigo_barras, nombre_snapshot, precio_unitario_snapshot, cantidad, subtotal FROM tmp_v1_movimiento_items;`,
 		`DROP TABLE tmp_v1_movimiento_items;`,
 		`DROP TABLE tmp_v1_movimientos;`,
-		`PRAGMA user_version = 2;`,
+		`PRAGMA user_version = 3;`,
 	}
 	for _, s := range restoreStmts {
 		if _, err := tx.Exec(s); err != nil {
@@ -470,7 +562,109 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 	}, nil
 }
 
-func v2DDLStatements() []string {
+// migrateV2UTCToV3LocalTime converts legacy UTC timestamps (stored via SQLite CURRENT_TIMESTAMP)
+// to the machine's local timezone once so purchase timestamps match local security camera clocks.
+func migrateV2UTCToV3LocalTime(conn *sql.DB, accountsDBPath string, prevVer int) (*SchemaMigrationReport, error) {
+	_, _ = conn.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+	backupPath := ""
+	if accountsDBPath != "" {
+		if rawDB, err := os.ReadFile(accountsDBPath); err == nil && len(rawDB) > 0 {
+			candidateBak := accountsDBPath + ".v2.bak"
+			if wErr := os.WriteFile(candidateBak, rawDB, 0644); wErr == nil {
+				backupPath = candidateBak
+			}
+		}
+	}
+
+	type accDates struct {
+		Key       string
+		CreatedAt string
+		UpdatedAt string
+	}
+	var accList []accDates
+	aRows, err := conn.Query(`SELECT account_key, COALESCE(CAST(creado_en AS TEXT), ''), COALESCE(CAST(actualizado_en AS TEXT), '') FROM cuentas;`)
+	if err != nil {
+		return nil, fmt.Errorf("reading cuentas timestamps for v3 migration failed: %w", err)
+	}
+	for aRows.Next() {
+		var row accDates
+		if err := aRows.Scan(&row.Key, &row.CreatedAt, &row.UpdatedAt); err == nil {
+			accList = append(accList, row)
+		}
+	}
+	_ = aRows.Close()
+
+	type movDate struct {
+		ID   int64
+		Date string
+	}
+	var movList []movDate
+	mRows, err := conn.Query(`SELECT id, COALESCE(CAST(fecha AS TEXT), '') FROM movimientos;`)
+	if err != nil {
+		return nil, fmt.Errorf("reading movimientos timestamps for v3 migration failed: %w", err)
+	}
+	for mRows.Next() {
+		var row movDate
+		if err := mRows.Scan(&row.ID, &row.Date); err == nil {
+			movList = append(movList, row)
+		}
+	}
+	_ = mRows.Close()
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, a := range accList {
+		cLoc := ConvertUTCToLocalString(a.CreatedAt)
+		uLoc := ConvertUTCToLocalString(a.UpdatedAt)
+		if cLoc != a.CreatedAt || uLoc != a.UpdatedAt {
+			if _, err := tx.Exec(`UPDATE cuentas SET creado_en = ?, actualizado_en = ? WHERE account_key = ?;`, cLoc, uLoc, a.Key); err != nil {
+				return nil, fmt.Errorf("updating account timestamp failed: %w", err)
+			}
+		}
+	}
+
+	for _, mv := range movList {
+		fLoc := ConvertUTCToLocalString(mv.Date)
+		if fLoc != mv.Date {
+			if _, err := tx.Exec(`UPDATE movimientos SET fecha = ? WHERE id = ?;`, fLoc, mv.ID); err != nil {
+				return nil, fmt.Errorf("updating movement timestamp failed: %w", err)
+			}
+		}
+	}
+
+	if _, err := tx.Exec(`PRAGMA user_version = 3;`); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+
+	var itemCnt int
+	_ = conn.QueryRow(`SELECT COUNT(*) FROM movimiento_items;`).Scan(&itemCnt)
+	if prevVer == 0 {
+		prevVer = 2
+	}
+	return &SchemaMigrationReport{
+		PreviousVersion:    prevVer,
+		CurrentVersion:     CurrentSchemaVersion,
+		Migrated:           true,
+		BackupPath:         backupPath,
+		AccountsPreserved:  len(accList),
+		MovementsPreserved: len(movList),
+		ItemsPreserved:     itemCnt,
+	}, nil
+}
+
+func v3DDLStatements() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS cuentas (
 			account_key TEXT PRIMARY KEY,
@@ -483,8 +677,8 @@ func v2DDLStatements() []string {
 			tope_credito INTEGER NOT NULL DEFAULT 0,
 			descripcion TEXT NOT NULL DEFAULT '',
 			estado TEXT NOT NULL DEFAULT 'ACTIVA' CHECK (estado IN ('ACTIVA', 'BLOQUEADA', 'CERRADA')),
-			creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
-			actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+			creado_en DATETIME DEFAULT (datetime('now', 'localtime')),
+			actualizado_en DATETIME DEFAULT (datetime('now', 'localtime'))
 		);`,
 		`CREATE TABLE IF NOT EXISTS movimientos (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -493,7 +687,7 @@ func v2DDLStatements() []string {
 			monto INTEGER NOT NULL,
 			metodo_pago_usado TEXT NOT NULL DEFAULT '',
 			nota TEXT NOT NULL DEFAULT '',
-			fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+			fecha DATETIME DEFAULT (datetime('now', 'localtime'))
 		);`,
 		`CREATE TABLE IF NOT EXISTS movimiento_items (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -513,8 +707,8 @@ func v2DDLStatements() []string {
 	}
 }
 
-func createFreshV2Schema(conn *sql.DB) error {
-	stmts := append(v2DDLStatements(), `PRAGMA user_version = 2;`)
+func createFreshV3Schema(conn *sql.DB) error {
+	stmts := append(v3DDLStatements(), `PRAGMA user_version = 3;`)
 	for idx, q := range stmts {
 		if _, err := conn.Exec(q); err != nil {
 			return fmt.Errorf("accounts migration %d failed: %w", idx+1, err)
@@ -669,19 +863,20 @@ func (m *Manager) CreateOrUpdateAccountWithItems(req CreateAccountRequest) (*Acc
 		_ = tx.QueryRow(`SELECT account_key FROM cuentas WHERE LOWER(id) = LOWER(?) AND LOWER(nombre) = LOWER(?);`, fullID, name).Scan(&existingKey)
 	}
 
+	nowLocal := LocalTimestampNow()
 	accountKey := existingKey
 	if accountKey != "" {
 		_, err = tx.Exec(`
 			UPDATE cuentas
-			SET id = ?, id_prefix = ?, id_number = ?, nombre = ?, telefono = ?, metodo_pago = ?, tope_credito = ?, descripcion = ?, actualizado_en = CURRENT_TIMESTAMP
+			SET id = ?, id_prefix = ?, id_number = ?, nombre = ?, telefono = ?, metodo_pago = ?, tope_credito = ?, descripcion = ?, actualizado_en = ?
 			WHERE account_key = ?;
-		`, fullID, idPrefix, idNumber, name, phone, payMethod, req.CreditLimit, desc, accountKey)
+		`, fullID, idPrefix, idNumber, name, phone, payMethod, req.CreditLimit, desc, nowLocal, accountKey)
 	} else {
 		accountKey = MakeAccountKey(fullID, name)
 		_, err = tx.Exec(`
 			INSERT INTO cuentas (account_key, id, id_prefix, id_number, nombre, telefono, metodo_pago, tope_credito, descripcion, estado, creado_en, actualizado_en)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVA', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-		`, accountKey, fullID, idPrefix, idNumber, name, phone, payMethod, req.CreditLimit, desc)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVA', ?, ?);
+		`, accountKey, fullID, idPrefix, idNumber, name, phone, payMethod, req.CreditLimit, desc, nowLocal, nowLocal)
 	}
 	if err != nil {
 		return nil, err
@@ -718,8 +913,8 @@ func (m *Manager) CreateOrUpdateAccountWithItems(req CreateAccountRequest) (*Acc
 
 		movRes, err := tx.Exec(`
 			INSERT INTO movimientos (cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha)
-			VALUES (?, 'CARGO', ?, ?, ?, CURRENT_TIMESTAMP);
-		`, accountKey, chargeAmount, payMethod, note)
+			VALUES (?, 'CARGO', ?, ?, ?, ?);
+		`, accountKey, chargeAmount, payMethod, note, nowLocal)
 		if err != nil {
 			return nil, err
 		}
@@ -818,10 +1013,11 @@ func (m *Manager) RecordMovement(req MovementRequest) (*AccountSummary, error) {
 		}
 	}
 
+	nowLocal := LocalTimestampNow()
 	movRes, err := tx.Exec(`
 		INSERT INTO movimientos (cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
-	`, accountKey, string(req.Type), amount, payMethod, note)
+		VALUES (?, ?, ?, ?, ?, ?);
+	`, accountKey, string(req.Type), amount, payMethod, note, nowLocal)
 	if err != nil {
 		return nil, err
 	}
@@ -836,7 +1032,7 @@ func (m *Manager) RecordMovement(req MovementRequest) (*AccountSummary, error) {
 		}
 	}
 
-	_, _ = tx.Exec(`UPDATE cuentas SET actualizado_en = CURRENT_TIMESTAMP WHERE account_key = ?;`, accountKey)
+	_, _ = tx.Exec(`UPDATE cuentas SET actualizado_en = ? WHERE account_key = ?;`, nowLocal, accountKey)
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -860,7 +1056,7 @@ func (m *Manager) UpdateStatusByName(accountID, customerName string, status Acco
 	if err != nil {
 		return err
 	}
-	_, err = m.DB.Exec(`UPDATE cuentas SET estado = ?, actualizado_en = CURRENT_TIMESTAMP WHERE account_key = ?;`, string(status), accountKey)
+	_, err = m.DB.Exec(`UPDATE cuentas SET estado = ?, actualizado_en = ? WHERE account_key = ?;`, string(status), LocalTimestampNow(), accountKey)
 	return err
 }
 
@@ -1074,7 +1270,7 @@ func (m *Manager) ListAccounts(search string) (*AccountsLedgerReport, error) {
 	}
 
 	report := &AccountsLedgerReport{
-		GeneratedAt:    time.Now().UTC(),
+		GeneratedAt:    LocalNow(),
 		AccountsDBPath: m.DBPath,
 	}
 
@@ -1173,7 +1369,7 @@ func GenerateStatement(acc AccountSummary, storeName string) string {
 	sb.WriteString("====================================================\n")
 	sb.WriteString("   ESTADO DE CUENTA DE CLIENTE\n")
 	sb.WriteString(fmt.Sprintf("   Comercio: %s\n", storeName))
-	sb.WriteString(fmt.Sprintf("   Fecha:    %s\n", time.Now().Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("   Fecha:    %s\n", LocalNow().Format("2006-01-02 15:04:05")))
 	sb.WriteString("====================================================\n")
 	sb.WriteString(fmt.Sprintf("ID Cuenta:       %s\n", acc.ID))
 	sb.WriteString(fmt.Sprintf("Cliente:         %s\n", acc.Name))

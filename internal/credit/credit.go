@@ -352,7 +352,7 @@ func (e *Engine) BuildLedger(customerFilter string, minOverdueDays int) (*Ledger
 	}
 
 	report := &LedgerReport{
-		GeneratedAt:     now.UTC(),
+		GeneratedAt:     now,
 		StoreID:         e.Cfg.StoreID,
 		CashRegisterID:  e.Cfg.CashRegisterID,
 		AllTransactions: allTxs,
@@ -439,7 +439,7 @@ func GenerateStatement(acc CustomerCreditAccount, storeName, dualCurrency string
 	sb.WriteString("====================================================\n")
 	sb.WriteString("   ESTADO DE CUENTA DE CRÉDITO DE CLIENTE\n")
 	sb.WriteString(fmt.Sprintf("   Comercio: %s\n", storeName))
-	sb.WriteString(fmt.Sprintf("   Fecha:    %s\n", time.Now().Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("   Fecha:    %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	sb.WriteString("====================================================\n")
 	sb.WriteString(fmt.Sprintf("Cliente:         %s (ID: %d)\n", acc.CustomerName, acc.CustomerID))
 	if acc.PhoneNumber != "" {

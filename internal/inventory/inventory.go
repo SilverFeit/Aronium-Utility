@@ -147,9 +147,9 @@ func (e *Engine) BuildReport(maxExpireDays int) (*InventoryReport, error) {
 	if maxExpireDays <= 0 {
 		maxExpireDays = 30
 	}
-	now := time.Now()
+	now := accounts.LocalNow()
 	rep := &InventoryReport{
-		GeneratedAt: now.UTC(),
+		GeneratedAt: now,
 		StoreID:     e.Cfg.StoreID,
 	}
 
@@ -269,11 +269,15 @@ func (e *Engine) SyncKardexFromDocuments() (int, error) {
 		}
 		for _, it := range doc.Items {
 			delta := sign * it.Quantity
+			recAt := doc.Date
+			if strings.TrimSpace(recAt) == "" {
+				recAt = accounts.LocalTimestampNow()
+			}
 			res, err := e.StateDB.Exec(`
 				INSERT OR IGNORE INTO kardex_history
 					(document_id, document_number, product_id, product_code, product_name, delta_qty, resulting_qty, register_id, recorded_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP));
-			`, doc.ID, doc.Number, it.ProductID, it.ProductCode, it.ProductName, delta, currentStock[it.ProductID], doc.CashRegisterID, doc.Date)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+			`, doc.ID, doc.Number, it.ProductID, it.ProductCode, it.ProductName, delta, currentStock[it.ProductID], doc.CashRegisterID, recAt)
 			if err == nil {
 				if aff, _ := res.RowsAffected(); aff > 0 {
 					inserted++

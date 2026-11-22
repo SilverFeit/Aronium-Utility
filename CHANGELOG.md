@@ -2,6 +2,16 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.8] — 2026-11-22
+
+### Fixed
+- **Local PC Timezone Timestamps for Movements & Camera Cross-Referencing (`internal/accounts`, Schema v3):**
+  - Replaced SQLite's UTC `CURRENT_TIMESTAMP` inserts/updates in `cuentas.db` (`creado_en`, `actualizado_en`, `movimientos.fecha`), `kardex_history` fallbacks, and ledger reports with explicit local OS wall-clock timestamps (`YYYY-MM-DD HH:MM:SS` with exact seconds via `LocalTimestampNow()` and `DEFAULT (datetime('now', 'localtime'))`, supporting optional `ARONIUM_TIMEZONE` override such as `America/Bogota`).
+  - Updated `GenerateStatement` header timestamp in `accounts` and `credit` to include exact seconds (`YYYY-MM-DD HH:MM:SS`) so receipt/statement headers match individual purchase timestamps down to the second for security camera verification.
+  - Added lossless automatic schema migration **v2 → v3** (`migrateV2UTCToV3LocalTime`, backing up to `cuentas.db.v2.bak`) that converts existing UTC movement/account timestamps in `cuentas.db` into local time once without double-shifting future records.
+
+---
+
 ## [1.2.7] — 2026-11-22
 
 ### Improved

@@ -1042,7 +1042,7 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	if err != nil {
 		t.Fatalf("MigrateAccountsDB failed: %v", err)
 	}
-	if !migRep.Migrated || migRep.PreviousVersion != 1 || migRep.CurrentVersion != 2 ||
+	if !migRep.Migrated || migRep.PreviousVersion != 1 || migRep.CurrentVersion != accounts.CurrentSchemaVersion ||
 		migRep.AccountsPreserved != 1 || migRep.MovementsPreserved != 1 || migRep.ItemsPreserved != 1 {
 		t.Fatalf("unexpected migration report: %+v", migRep)
 	}
@@ -1295,5 +1295,121 @@ func TestBDD_TrayAutostartPreference_And_ServiceManagement(t *testing.T) {
 	disabledSt, err := mgr.SetUIAutostart(false, mockUIBin)
 	if err != nil || disabledSt.Enabled || mgr.ReadAutostartPreference() != "disabled" {
 		t.Fatalf("expected autostart disabled after SetUIAutostart(false), got %+v (err=%v)", disabledSt, err)
+	}
+}
+
+func TestBDD_LocalTimezoneTimestamps_And_V2UTCToV3Migration(t *testing.T) {
+	t.Setenv("ARONIUM_TIMEZONE", "America/Bogota")
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cuentas.db")
+
+	// Seed a v2 cuentas.db storing legacy UTC CURRENT_TIMESTAMP values (e.g., 07:36:36 UTC when local PC time is 02:36:36 -05:00)
+	v2Conn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open v2 sqlite: %v", err)
+	}
+	v2DDL := `
+	CREATE TABLE cuentas (
+		account_key TEXT PRIMARY KEY,
+		id TEXT NOT NULL,
+		id_prefix TEXT NOT NULL DEFAULT '',
+		id_number TEXT NOT NULL DEFAULT '',
+		nombre TEXT NOT NULL,
+		telefono TEXT NOT NULL DEFAULT '',
+		metodo_pago TEXT NOT NULL DEFAULT 'Efectivo',
+		tope_credito INTEGER NOT NULL DEFAULT 0,
+		descripcion TEXT NOT NULL DEFAULT '',
+		estado TEXT NOT NULL DEFAULT 'ACTIVA',
+		creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+		actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE movimientos (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		cuenta_id TEXT NOT NULL REFERENCES cuentas(account_key) ON DELETE CASCADE,
+		tipo TEXT NOT NULL,
+		monto INTEGER NOT NULL,
+		metodo_pago_usado TEXT NOT NULL DEFAULT '',
+		nota TEXT NOT NULL DEFAULT '',
+		fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE movimiento_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		movimiento_id INTEGER NOT NULL REFERENCES movimientos(id) ON DELETE CASCADE,
+		aronium_product_id INTEGER NOT NULL DEFAULT 0,
+		codigo_barras TEXT NOT NULL DEFAULT '',
+		nombre_snapshot TEXT NOT NULL,
+		precio_unitario_snapshot INTEGER NOT NULL,
+		cantidad REAL NOT NULL DEFAULT 1,
+		subtotal INTEGER NOT NULL
+	);
+	INSERT INTO cuentas (account_key, id, id_prefix, id_number, nombre, telefono, metodo_pago, tope_credito, creado_en, actualizado_en)
+		VALUES ('abc-123::cliente prueba', 'ABC-123', 'ABC', '123', 'Cliente Prueba', '', 'Otro', 1000000, '2026-11-22 06:52:36', '2026-11-22 07:36:36');
+	INSERT INTO movimientos (id, cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha)
+		VALUES (1, 'abc-123::cliente prueba', 'CARGO', 50000, 'Otro', 'Anotación de 1 concepto(s)', '2026-11-22 06:52:36');
+	INSERT INTO movimientos (id, cuenta_id, tipo, monto, metodo_pago_usado, nota, fecha)
+		VALUES (2, 'abc-123::cliente prueba', 'CARGO', 15500, 'Otro', 'Anotación de 2 concepto(s)', '2026-11-22 07:36:36');
+	PRAGMA user_version = 2;
+	`
+	if _, err := v2Conn.Exec(v2DDL); err != nil {
+		t.Fatalf("seed v2 db: %v", err)
+	}
+	_ = v2Conn.Close()
+
+	// Migrating v2 -> v3 should convert existing UTC timestamps to America/Bogota (-05:00) once
+	migRep, err := accounts.MigrateAccountsDB(dbPath)
+	if err != nil {
+		t.Fatalf("MigrateAccountsDB v2->v3 failed: %v", err)
+	}
+	if !migRep.Migrated || migRep.PreviousVersion != 2 || migRep.CurrentVersion != 3 {
+		t.Fatalf("expected v2->v3 migration report, got %+v", migRep)
+	}
+
+	mgr, err := accounts.NewManager(dbPath)
+	if err != nil {
+		t.Fatalf("NewManager post v3 migration failed: %v", err)
+	}
+	defer mgr.Close()
+
+	acc, err := mgr.GetAccountByIDAndName("ABC-123", "Cliente Prueba")
+	if err != nil || len(acc.Movements) != 2 {
+		t.Fatalf("GetAccountByIDAndName failed: %+v (err=%v)", acc, err)
+	}
+	if acc.Movements[0].Date != "2026-11-22 02:36:36" || acc.Movements[1].Date != "2026-11-22 01:52:36" {
+		t.Fatalf("expected converted local Bogota timestamps [02:36:36, 01:52:36], got [%s, %s]",
+			acc.Movements[0].Date, acc.Movements[1].Date)
+	}
+
+	// Second migration check must be idempotent (never double-shift local timestamps)
+	migRep2, err := accounts.MigrateAccountsDB(dbPath)
+	if err != nil || migRep2.Migrated {
+		t.Fatalf("expected idempotent v3 re-check without re-migration, got %+v (err=%v)", migRep2, err)
+	}
+
+	// New movement must record exact America/Bogota local wall-clock time matching statement header
+	before := accounts.LocalNow().Truncate(time.Second)
+	updated, err := mgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "ABC-123",
+		CustomerName:  "Cliente Prueba",
+		Type:          accounts.MovementCharge,
+		Amount:        2000,
+		PaymentMethod: "QR",
+		Note:          "Compra con cámara sincronizada",
+	})
+	after := accounts.LocalNow().Add(time.Second)
+	if err != nil {
+		t.Fatalf("RecordMovement failed: %v", err)
+	}
+	newestDate, err := time.ParseInLocation("2006-01-02 15:04:05", updated.Movements[0].Date, accounts.LocalLocation())
+	if err != nil {
+		t.Fatalf("parse new movement local date %q: %v", updated.Movements[0].Date, err)
+	}
+	if newestDate.Before(before.Add(-time.Second)) || newestDate.After(after.Add(time.Second)) {
+		t.Fatalf("expected new movement timestamp in local range [%s, %s], got %s", before, after, newestDate)
+	}
+
+	stmt := accounts.GenerateStatement(*updated, "Mi Comercio Aronium")
+	if !strings.Contains(stmt, updated.Movements[0].Date[:13]) {
+		t.Fatalf("expected statement header and movement date hour prefix %q to match:\n%s", updated.Movements[0].Date[:13], stmt)
 	}
 }
