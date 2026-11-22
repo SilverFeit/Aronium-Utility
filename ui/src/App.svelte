@@ -48,8 +48,10 @@
 
   // Create Account / Annotate Items Form (Modo Básico)
   let accountActionMode = $state<'new' | 'existing'>('new');
-  let selectedExistingAccountId = $state('');
-  let formId = $state('');
+  let selectedExistingAccountKey = $state('');
+  let formIdPrefix = $state('');
+  let formIdNumber = $state('');
+  let formIdNumberEl = $state<HTMLInputElement | null>(null);
   let formName = $state('');
   let formPhone = $state('');
   let formPaymentMethod = $state('Efectivo');
@@ -57,6 +59,18 @@
   let formDescription = $state('');
   let formMoveNote = $state('');
   let allowOverLimitConfirm = $state(false);
+
+  let combinedFormId = $derived(
+    formIdPrefix.trim() && formIdNumber.trim()
+      ? `${formIdPrefix.trim()}-${formIdNumber.trim()}`
+      : formIdPrefix.trim()
+        ? `${formIdPrefix.trim()}-`
+        : formIdNumber.trim()
+  );
+
+  // Quick Punctual Value entry above scanner (Dulces, comida, tinto / sin código)
+  let quickValueDesc = $state('');
+  let quickValueAmount = $state<number>(0);
 
   // Barcode Scanner & Live Product Search (from pos.db)
   let scannerInputEl = $state<HTMLInputElement | null>(null);
@@ -71,7 +85,7 @@
   let payAmount = $state<number>(0);
   let payMethod = $state('Efectivo');
   let payNote = $state('Pago recibido en cuenta');
-  let expandedAccountId = $state<string>('');
+  let expandedAccountKey = $state<string>('');
   let selectedStatement = $state('');
   let selectedStatementCustomer = $state('');
 
@@ -81,9 +95,28 @@
   let invSubView = $state<'catalog' | 'kardex'>('catalog');
   let backupPassphrase = $state('');
 
+  function accKeyOf(acc: CustomerAccount): string {
+    return acc.account_key || acc.id;
+  }
+
   let selectedExistingAccount = $derived(
-    (accountsReport?.cuentas || []).find((a) => a.id === selectedExistingAccountId) || null
+    (accountsReport?.cuentas || []).find((a) => accKeyOf(a) === selectedExistingAccountKey) || null
   );
+
+  let accountsSharingNewId = $derived.by(() => {
+    const target =
+      formIdPrefix.trim() && formIdNumber.trim()
+        ? `${formIdPrefix.trim()}-${formIdNumber.trim()}`.toLowerCase()
+        : '';
+    if (!target) return [];
+    return (accountsReport?.cuentas || []).filter((a) => a.id.toLowerCase() === target);
+  });
+
+  let sharedAccountsForPayment = $derived.by(() => {
+    if (!activePayAccount) return [];
+    const targetId = activePayAccount.id.toLowerCase();
+    return (accountsReport?.cuentas || []).filter((a) => a.id.toLowerCase() === targetId);
+  });
 
   let cartTotal = $derived(
     cartItems.reduce(
@@ -92,11 +125,22 @@
     )
   );
 
-  let currentAccountBalance = $derived(
-    accountActionMode === 'existing' && selectedExistingAccount
-      ? selectedExistingAccount.saldo_actual
-      : (accountsReport?.cuentas || []).find((a) => a.id === formId.trim())?.saldo_actual || 0
-  );
+  let currentAccountBalance = $derived.by(() => {
+    if (accountActionMode === 'existing' && selectedExistingAccount) {
+      return selectedExistingAccount.saldo_actual;
+    }
+    const targetId =
+      formIdPrefix.trim() && formIdNumber.trim()
+        ? `${formIdPrefix.trim()}-${formIdNumber.trim()}`.toLowerCase()
+        : '';
+    const targetName = formName.trim().toLowerCase();
+    if (!targetId || !targetName) return 0;
+    return (
+      (accountsReport?.cuentas || []).find(
+        (a) => a.id.toLowerCase() === targetId && a.nombre.toLowerCase() === targetName
+      )?.saldo_actual || 0
+    );
+  });
 
   let activeCreditLimit = $derived(
     accountActionMode === 'existing' && selectedExistingAccount
@@ -265,6 +309,78 @@
     }
   }
 
+  function handleIdPrefixInput(value: string) {
+    if (value.includes('-')) {
+      const idx = value.lastIndexOf('-');
+      formIdPrefix = value.slice(0, idx).replace(/-/g, '').trim();
+      const restDigits = value.slice(idx + 1).replace(/\D/g, '');
+      if (restDigits) {
+        formIdNumber = restDigits;
+      }
+      tick().then(() => formIdNumberEl?.focus());
+    } else {
+      formIdPrefix = value;
+    }
+  }
+
+  function handleIdNumberInput(value: string) {
+    formIdNumber = value.replace(/\D/g, '');
+  }
+
+  function adjustQuickValue(delta: number) {
+    const cur = Math.round(Number(quickValueAmount || 0));
+    quickValueAmount = Math.max(0, cur + delta);
+  }
+
+  function addQuickValueToCart(rawAmount: number) {
+    const val = Math.round(Number(rawAmount || 0));
+    if (val <= 0) {
+      showToast('Ingresa o selecciona un valor puntual mayor a $0.', true);
+      return;
+    }
+    const label = quickValueDesc.trim() || 'Valor puntual (varios / sin código)';
+    const existingIdx = cartItems.findIndex(
+      (it) =>
+        it.aronium_product_id === 0 &&
+        it.codigo_barras === 'PUNTUAL' &&
+        it.nombre_snapshot === label &&
+        it.precio_unitario_snapshot === val
+    );
+    if (existingIdx >= 0) {
+      cartItems[existingIdx] = {
+        ...cartItems[existingIdx],
+        cantidad: Number(cartItems[existingIdx].cantidad) + 1,
+      };
+      cartItems = [...cartItems];
+    } else {
+      cartItems = [
+        ...cartItems,
+        {
+          aronium_product_id: 0,
+          codigo_barras: 'PUNTUAL',
+          nombre_snapshot: label,
+          precio_unitario_snapshot: val,
+          cantidad: 1,
+        },
+      ];
+    }
+    showToast(`+$${val.toLocaleString()} agregado: "${label}"`);
+  }
+
+  function adjustCartItemUnitPrice(index: number, delta: number) {
+    const curPrice = Math.round(Number(cartItems[index].precio_unitario_snapshot || 0));
+    const nextPrice = curPrice + delta;
+    if (nextPrice <= 0) {
+      cartItems = cartItems.filter((_, i) => i !== index);
+      return;
+    }
+    cartItems[index] = {
+      ...cartItems[index],
+      precio_unitario_snapshot: nextPrice,
+    };
+    cartItems = [...cartItems];
+  }
+
   function updateItemQty(index: number, delta: number) {
     const nextQty = Number(cartItems[index].cantidad) + delta;
     if (nextQty <= 0) {
@@ -277,8 +393,18 @@
 
   function selectExistingAccountForCharge(acc: CustomerAccount) {
     accountActionMode = 'existing';
-    selectedExistingAccountId = acc.id;
-    formId = acc.id;
+    selectedExistingAccountKey = accKeyOf(acc);
+    if (acc.id_prefix || acc.id_number) {
+      formIdPrefix = acc.id_prefix || '';
+      formIdNumber = acc.id_number || '';
+    } else if (acc.id.includes('-')) {
+      const idx = acc.id.lastIndexOf('-');
+      formIdPrefix = acc.id.slice(0, idx);
+      formIdNumber = acc.id.slice(idx + 1);
+    } else {
+      formIdPrefix = '';
+      formIdNumber = acc.id;
+    }
     formName = acc.nombre;
     formPhone = acc.telefono;
     formPaymentMethod = acc.metodo_pago;
@@ -288,15 +414,17 @@
   }
 
   async function handleSaveAccountAndItems() {
+    const cleanPrefix = formIdPrefix.trim();
+    const cleanNum = formIdNumber.trim();
     if (accountActionMode === 'new') {
-      if (!formId.trim() || !formName.trim() || !formPhone.trim() || !formDescription.trim()) {
+      if (!cleanPrefix || !cleanNum || !/^\d+$/.test(cleanNum) || !formName.trim()) {
         showToast(
-          'Por favor completa ID, Nombre, Teléfono, Método de Pago, Tope de Crédito y Descripción.',
+          'Por favor completa las 2 partes del ID (Texto y Número, ej. Parques-18502) y el Nombre del cliente. Teléfono y descripción son opcionales.',
           true
         );
         return;
       }
-    } else if (!selectedExistingAccountId.trim()) {
+    } else if (!selectedExistingAccountKey.trim()) {
       showToast('Selecciona la cuenta del cliente a la que deseas anotar artículos.', true);
       return;
     }
@@ -312,11 +440,16 @@
     loading = true;
     try {
       if (accountActionMode === 'new') {
+        const fullId = `${cleanPrefix}-${cleanNum}`;
         const args = [
           'accounts',
           'create',
           '--id',
-          formId.trim(),
+          fullId,
+          '--id-prefix',
+          cleanPrefix,
+          '--id-number',
+          cleanNum,
           '--name',
           formName.trim(),
           '--phone',
@@ -337,11 +470,11 @@
         args.push('--json');
         await runAroniumCLI(args);
         showToast(
-          `¡Cuenta "${formName.trim()}" guardada en cuentas.db${cartItems.length > 0 ? ` con ${cartItems.length} artículo(s)` : ''} y sincronizada con Google Drive!`
+          `¡Cuenta [${fullId}] "${formName.trim()}" guardada en cuentas.db${cartItems.length > 0 ? ` con ${cartItems.length} concepto(s)` : ''} y sincronizada con Google Drive!`
         );
       } else {
         if (cartItems.length === 0) {
-          showToast('Escanea o agrega al menos un artículo para anotar en la cuenta.', true);
+          showToast('Escanea, agrega un artículo o ingresa un valor puntual para anotar en la cuenta.', true);
           loading = false;
           return;
         }
@@ -349,26 +482,31 @@
           'accounts',
           'charge',
           '--account-id',
-          selectedExistingAccountId,
+          selectedExistingAccountKey,
+          '--name',
+          selectedExistingAccount?.nombre || '',
           '--items-json',
           JSON.stringify(cartItems),
           '--payment-method',
           formPaymentMethod,
           '--note',
-          formMoveNote.trim() || `Anotación de ${cartItems.length} artículo(s)`,
+          formMoveNote.trim() || `Anotación de ${cartItems.length} concepto(s)`,
           '--json',
         ];
         await runAroniumCLI(args);
         showToast(
-          `¡Artículos anotados a la cuenta de ${selectedExistingAccount?.nombre} y sincronizados con Google Drive!`
+          `¡Conceptos anotados a la cuenta [${selectedExistingAccount?.id}] de ${selectedExistingAccount?.nombre} y sincronizados con Google Drive!`
         );
       }
 
       cartItems = [];
+      quickValueDesc = '';
+      quickValueAmount = 0;
       formMoveNote = '';
       allowOverLimitConfirm = false;
       if (accountActionMode === 'new') {
-        formId = '';
+        formIdPrefix = '';
+        formIdNumber = '';
         formName = '';
         formPhone = '';
         formDescription = '';
@@ -394,7 +532,9 @@
         'accounts',
         'pay',
         '--account-id',
-        activePayAccount.id,
+        accKeyOf(activePayAccount),
+        '--name',
+        activePayAccount.nombre,
         '--amount',
         String(Math.round(payAmount)),
         '--payment-method',
@@ -404,11 +544,12 @@
         '--json',
       ]);
       const paidCustomer = activePayAccount.nombre;
+      const paidId = activePayAccount.id;
       activePayAccount = null;
       payAmount = 0;
       await refreshAll();
       showToast(
-        `¡Pago registrado para ${paidCustomer} en cuentas.db y sincronizado con Google Drive (el cierre diario de Aronium no fue alterado)!`
+        `¡Pago registrado para [${paidId}] ${paidCustomer} en cuentas.db y sincronizado con Google Drive (el cierre diario de Aronium no fue alterado)!`
       );
     } catch (e: any) {
       showToast(`Error registrando pago: ${e?.message || e}`, true);
@@ -417,14 +558,16 @@
     }
   }
 
-  async function handleViewStatement(accountId: string, customerName: string) {
+  async function handleViewStatement(accKey: string, customerName: string) {
     loading = true;
     try {
       const res = await runAroniumCLI<{ statement: string }>([
         'accounts',
         'statement',
         '--account-id',
-        accountId,
+        accKey,
+        '--name',
+        customerName,
         '--json',
       ]);
       selectedStatementCustomer = customerName;
@@ -796,7 +939,7 @@
                   style="padding: 6px 12px; font-size: 12px;"
                   onclick={() => {
                     accountActionMode = 'new';
-                    selectedExistingAccountId = '';
+                    selectedExistingAccountKey = '';
                     allowOverLimitConfirm = false;
                   }}
                 >
@@ -821,17 +964,17 @@
                   Selecciona el Cliente Existente
                   <select
                     class="select"
-                    value={selectedExistingAccountId}
+                    value={selectedExistingAccountKey}
                     onchange={(e) => {
                       const val = (e.currentTarget as HTMLSelectElement).value;
-                      const found = (accountsReport?.cuentas || []).find((a) => a.id === val);
+                      const found = (accountsReport?.cuentas || []).find((a) => accKeyOf(a) === val);
                       if (found) selectExistingAccountForCharge(found);
                     }}
                   >
                     <option value="">-- Elige un cliente --</option>
                     {#each accountsReport?.cuentas || [] as acc}
-                      <option value={acc.id}>
-                        {acc.nombre} (ID: {acc.id}) — Saldo actual: ${acc.saldo_actual.toLocaleString()}
+                      <option value={accKeyOf(acc)}>
+                        [{acc.id}] {acc.nombre} — Saldo actual: ${acc.saldo_actual.toLocaleString()}
                       </option>
                     {/each}
                   </select>
@@ -839,22 +982,49 @@
               </div>
             {:else}
               <div class="form-grid">
+                <div class="field-label" style="grid-column: span 2;">
+                  <span>ID de la Cuenta / Apartamento (Texto - Número) *</span>
+                  <div class="compound-id-box">
+                    <input
+                      class="compound-id-part"
+                      placeholder="Texto (Ej. Parques)"
+                      value={formIdPrefix}
+                      oninput={(e) => handleIdPrefixInput((e.currentTarget as HTMLInputElement).value)}
+                    />
+                    <span class="compound-id-sep">-</span>
+                    <input
+                      bind:this={formIdNumberEl}
+                      class="compound-id-part"
+                      inputmode="numeric"
+                      placeholder="Número (Ej. 18502)"
+                      value={formIdNumber}
+                      oninput={(e) => handleIdNumberInput((e.currentTarget as HTMLInputElement).value)}
+                    />
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <span class="id-preview-pill">
+                      Vista previa ID: {combinedFormId || 'Texto-Número'}
+                    </span>
+                    {#if accountsSharingNewId.length > 0}
+                      <span style="font-size: 11.5px; color: var(--accent-amber); margin-top: 6px;">
+                        Ya existe cuenta en {combinedFormId} ({accountsSharingNewId.map((a) => a.nombre).join(', ')}). Usa un Nombre distinto para crear otra cuenta en este mismo ID.
+                      </span>
+                    {/if}
+                  </div>
+                </div>
                 <label class="field-label">
-                  ID / Documento del Cliente *
-                  <input class="input" placeholder="Ej. 10203040" bind:value={formId} />
-                </label>
-                <label class="field-label">
-                  Nombre Completo *
+                  Nombre Completo (Separa cuentas con mismo ID) *
                   <input class="input" placeholder="Ej. Juan Pérez" bind:value={formName} />
                 </label>
                 <label class="field-label">
-                  Teléfono *
-                  <input class="input" placeholder="Ej. 3001234567" bind:value={formPhone} />
+                  Teléfono (Opcional)
+                  <input class="input" placeholder="Opcional · Ej. 3001234567" bind:value={formPhone} />
                 </label>
                 <label class="field-label">
                   Método de Pago Acordado *
                   <select class="select" bind:value={formPaymentMethod}>
                     <option value="Efectivo">Efectivo</option>
+                    <option value="QR">QR</option>
                     <option value="Transferencia">Transferencia</option>
                     <option value="Tarjeta">Tarjeta</option>
                     <option value="Otro">Otro</option>
@@ -864,11 +1034,11 @@
                   Tope de Crédito *
                   <input class="input" type="number" min="0" step="1000" bind:value={formCreditLimit} />
                 </label>
-                <label class="field-label">
-                  Descripción / Referencia *
+                <label class="field-label" style="grid-column: span 2;">
+                  Descripción / Referencia (Opcional)
                   <input
                     class="input"
-                    placeholder="Ej. Pago mensual los días 30"
+                    placeholder="Opcional · Ej. Torre 2 Apto 18502"
                     bind:value={formDescription}
                   />
                 </label>
@@ -941,8 +1111,67 @@
             </button>
           </div>
 
-          <!-- Right Card: Barcode Scanner + Live Aronium Product Search + Cart -->
+          <!-- Right Card: Quick Punctual Value + Barcode Scanner + Live Aronium Product Search + Cart -->
           <div class="card">
+            <!-- Quick Punctual Value Annotator ABOVE Barcode Scanner (Dulces, comida, tinto / sin código) -->
+            <div class="quick-value-box">
+              <div style="font-size: 13.5px; font-weight: 800; color: #fde68a; margin-bottom: 8px;">
+                Agregar Valor Puntual (Dulces, Tinto, Comida / Sin Código)
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
+                <label class="field-label" style="margin-bottom: 0;">
+                  Descripción opcional (referente del artículo)
+                  <input
+                    class="input"
+                    placeholder="Opcional · Ej. Dulces, tinto, empanada, almuerzo..."
+                    bind:value={quickValueDesc}
+                  />
+                </label>
+                <div class="quick-stepper">
+                  <button
+                    type="button"
+                    class="btn btn-outline"
+                    style="padding: 8px 12px; font-weight: 800;"
+                    onclick={() => adjustQuickValue(-100)}
+                  >
+                    - 100
+                  </button>
+                  <input
+                    class="input"
+                    type="number"
+                    min="0"
+                    step="100"
+                    style="max-width: 140px; font-weight: 800; text-align: center;"
+                    placeholder="Valor $"
+                    bind:value={quickValueAmount}
+                  />
+                  <button
+                    type="button"
+                    class="btn btn-outline"
+                    style="padding: 8px 12px; font-weight: 800;"
+                    onclick={() => adjustQuickValue(100)}
+                  >
+                    + 100
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-amber"
+                    style="padding: 8px 14px;"
+                    onclick={() => addQuickValueToCart(quickValueAmount)}
+                  >
+                    + Anotar Valor
+                  </button>
+                </div>
+                <div class="quick-presets">
+                  <span style="font-size: 12px; color: var(--text-muted); font-weight: 600;">Valores rápidos:</span>
+                  <button type="button" class="btn-preset" onclick={() => addQuickValueToCart(500)}>+$500</button>
+                  <button type="button" class="btn-preset" onclick={() => addQuickValueToCart(1000)}>+$1.000</button>
+                  <button type="button" class="btn-preset" onclick={() => addQuickValueToCart(2000)}>+$2.000</button>
+                  <button type="button" class="btn-preset" onclick={() => addQuickValueToCart(5000)}>+$5.000</button>
+                </div>
+              </div>
+            </div>
+
             <div class="card-title">
               <span>Agregar Artículos con Escáner o Buscador (Opcional)</span>
               <button
@@ -1050,7 +1279,27 @@
                           {item.codigo_barras || 'SKU'}
                         </div>
                       </td>
-                      <td>${item.precio_unitario_snapshot.toLocaleString()}</td>
+                      <td>
+                        <div>${item.precio_unitario_snapshot.toLocaleString()}</div>
+                        {#if item.codigo_barras === 'PUNTUAL'}
+                          <div style="display: flex; gap: 4px; margin-top: 4px;">
+                            <button
+                              class="btn btn-outline"
+                              style="padding: 1px 6px; font-size: 10.5px;"
+                              onclick={() => adjustCartItemUnitPrice(idx, -100)}
+                            >
+                              -100
+                            </button>
+                            <button
+                              class="btn btn-outline"
+                              style="padding: 1px 6px; font-size: 10.5px;"
+                              onclick={() => adjustCartItemUnitPrice(idx, 100)}
+                            >
+                              +100
+                            </button>
+                          </div>
+                        {/if}
+                      </td>
                       <td>
                         <div style="display: flex; align-items: center; gap: 6px;">
                           <button
@@ -1114,15 +1363,48 @@
           </div>
         </div>
 
-        <!-- Inline Payment Form when user clicks "Registrar Pago / Abono" -->
+        <!-- Inline Payment Form showing all accounts sharing the same Apartment/Location ID -->
         {#if activePayAccount}
           <div class="card" style="border-color: var(--accent-green);">
             <div class="card-title">
-              <span>Registrar Pago / Abono para {activePayAccount.nombre}</span>
+              <span>Registrar Pago / Abono — ID: <code>{activePayAccount.id}</code></span>
               <button class="btn btn-outline" onclick={() => (activePayAccount = null)}>Cancelar</button>
             </div>
+
+            {#if sharedAccountsForPayment.length > 1}
+              <div style="margin-bottom: 12px;">
+                <div style="font-size: 13px; color: #fde68a; font-weight: 700; margin-bottom: 8px;">
+                  Este ID ({activePayAccount.id}) tiene {sharedAccountsForPayment.length} cuentas registradas. Elige a cuál deseas abonar:
+                </div>
+                <div class="shared-accounts-grid">
+                  {#each sharedAccountsForPayment as candidate}
+                    <button
+                      type="button"
+                      class="shared-account-card {accKeyOf(candidate) === accKeyOf(activePayAccount) ? 'selected' : ''}"
+                      onclick={() => {
+                        activePayAccount = candidate;
+                        payAmount = candidate.saldo_actual;
+                        payMethod = candidate.metodo_pago || 'Efectivo';
+                      }}
+                    >
+                      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <strong style="font-size: 14.5px;">{candidate.nombre}</strong>
+                        <span class={accKeyOf(candidate) === accKeyOf(activePayAccount) ? 'badge badge-ok' : 'badge badge-warn'}>
+                          ${candidate.saldo_actual.toLocaleString()}
+                        </span>
+                      </div>
+                      <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+                        Método: {candidate.metodo_pago} {candidate.descripcion ? `· ${candidate.descripcion}` : ''}
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
             <p style="font-size: 13px; color: var(--text-muted); margin-top: 0;">
-              Saldo pendiente actual: <strong>${activePayAccount.saldo_actual.toLocaleString()}</strong>.
+              Cuenta seleccionada: <strong>{activePayAccount.nombre}</strong> ({activePayAccount.id}) · Saldo pendiente:
+              <strong>${activePayAccount.saldo_actual.toLocaleString()}</strong>.
               Este pago se registra en <code>cuentas.db</code> sin dañar tu cierre diario de caja en Aronium.
             </p>
             <div class="form-grid">
@@ -1134,6 +1416,7 @@
                 Método de Pago Recibido
                 <select class="select" bind:value={payMethod}>
                   <option value="Efectivo">Efectivo</option>
+                  <option value="QR">QR</option>
                   <option value="Transferencia">Transferencia</option>
                   <option value="Tarjeta">Tarjeta</option>
                   <option value="Otro">Otro</option>
@@ -1150,7 +1433,7 @@
               disabled={loading}
               onclick={handleRecordPayment}
             >
-              Confirmar Pago y Actualizar Google Drive
+              Confirmar Pago para {activePayAccount.nombre} y Actualizar Google Drive
             </button>
           </div>
         {/if}
@@ -1189,8 +1472,13 @@
                   <div>
                     <strong style="font-size: 16.5px;">{acc.nombre}</strong>
                     <span class={statusBadgeClass(acc.estado)} style="margin-left: 8px;">{acc.estado}</span>
+                    {#if (acc.shared_id_count || 1) > 1}
+                      <span class="badge badge-warn" style="margin-left: 6px;">
+                        {acc.shared_id_count} cuentas en ID {acc.id}
+                      </span>
+                    {/if}
                     <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">
-                      ID: <strong>{acc.id}</strong> · Tel: {acc.telefono || 'Sin teléfono'} · Pago: {acc.metodo_pago} · {acc.descripcion}
+                      ID: <strong>{acc.id}</strong> · Tel: {acc.telefono || 'Opcional'} · Pago: {acc.metodo_pago}{acc.descripcion ? ` · ${acc.descripcion}` : ''}
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -1218,13 +1506,13 @@
                     <button
                       class="btn btn-outline"
                       onclick={() =>
-                        (expandedAccountId = expandedAccountId === acc.id ? '' : acc.id)}
+                        (expandedAccountKey = expandedAccountKey === accKeyOf(acc) ? '' : accKeyOf(acc))}
                     >
-                      {expandedAccountId === acc.id ? 'Ocultar Detalle' : 'Ver Detalle'}
+                      {expandedAccountKey === accKeyOf(acc) ? 'Ocultar Detalle' : 'Ver Detalle'}
                     </button>
                     <button
                       class="btn btn-outline"
-                      onclick={() => handleViewStatement(acc.id, acc.nombre)}
+                      onclick={() => handleViewStatement(accKeyOf(acc), acc.nombre)}
                     >
                       Recibo
                     </button>
@@ -1242,7 +1530,7 @@
                   </span>
                 </div>
 
-                {#if expandedAccountId === acc.id && acc.movimientos}
+                {#if expandedAccountKey === accKeyOf(acc) && acc.movimientos}
                   <table style="margin-top: 12px;">
                     <thead>
                       <tr>

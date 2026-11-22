@@ -2,6 +2,25 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.1] — 2026-11-22
+
+### Fixed
+- **Windows Executable & Shortcut Icon Brightness Fix (`Scripts/gen_winres.go`, `cmd/aronium-util-setup`, `internal/service`):**
+  - Fixed a 4x supersampling alpha normalization bug in `renderAppIcon` where dividing accumulated RGB channels by `avgA` (0..255) instead of `afSum` dimmed icons to ~6% luminance (appearing almost pitch black in Windows Explorer and shortcuts).
+  - Brightened vector gradient & contrast palette, bundled `app-icon.ico` directly in installation output and `.zip` packages, and added `ie4uinit.exe -show` / `-ClearIconCache` refresh on Windows desktop/startup shortcut creation.
+
+### Added
+- **Compound Two-Part ID (`Texto-Numero`, e.g., `Parques-18502`) & Shared Apartment Accounts (`cuentas.db` Schema v2):**
+  - Dual-part unified ID field (`Texto` + `-` + `Número`) with live hyphen preview badge (`Parques-18502`).
+  - Allows multiple independent customer accounts to share the same compound ID (differentiated by `nombre`) and displays all accounts sharing that ID during payment registration (`Registrar Pago / Abono`) so the clerk picks the exact person.
+  - Made **Teléfono** and **Descripción / Referencia** optional, and added **`QR`** as a payment method option across account creation, payments, and CLI flags (`--payment-method QR`, `--id-prefix`, `--id-number`, `--name`, `accounts by-id`).
+- **Quick Punctual Value Annotator (`Agregar Valor Puntual` above Scanner):**
+  - Added quick custom value panel directly above *"Agregar Artículos con Escáner o Buscador (Opcional)"* with optional item description, manual amount input flanked by **`-100` / `+100`** step buttons, and 1-click preset value buttons (**`+$500`**, **`+$1.000`**, **`+$2.000`**, **`+$5.000`**) for unbarcoded items such as sweets, coffee, or meals.
+- **Automatic Upgrade Detection & Lossless `cuentas.db` Schema Migration (v1 → v2):**
+  - Both the unified installer (`aronium-util-setup`) and CLI (`init`, `accounts migrate`, `OpenAccountsDB`) detect existing installations, preserve `aronium-util.yaml` configuration and custom DB paths, save a pre-migration `.v1.bak` backup, and losslessly migrate v1 `cuentas.db` tables to v2 (`account_key`) preserving 100% of accounts, movements, and frozen item snapshots.
+
+---
+
 ## [1.2.0] — 2026-11-21
 
 ### Added

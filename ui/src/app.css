@@ -496,3 +496,113 @@ pre.stmt-box {
 .catalog-row:hover {
   background: var(--bg-hover);
 }
+
+/* Compound 2-part ID input (Texto - Numero) */
+.compound-id-box {
+  display: flex;
+  align-items: center;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 6px;
+  gap: 6px;
+}
+
+.compound-id-box:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.compound-id-part {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  padding: 8px 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.compound-id-sep {
+  font-weight: 900;
+  font-size: 18px;
+  color: var(--accent-blue);
+  user-select: none;
+}
+
+.id-preview-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #bae6fd;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Quick Punctual Value Annotator */
+.quick-value-box {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.quick-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.quick-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.btn-preset {
+  background: rgba(52, 211, 153, 0.16);
+  color: #a7f3d0;
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.btn-preset:hover {
+  background: rgba(52, 211, 153, 0.3);
+}
+
+.shared-accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.shared-account-card {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-main);
+  transition: all 0.15s ease;
+}
+
+.shared-account-card.selected {
+  border-color: var(--accent-green);
+  background: rgba(52, 211, 153, 0.12);
+}

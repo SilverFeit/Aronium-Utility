@@ -21,7 +21,10 @@ var embeddedCLIBinary []byte
 //go:embed payload/aronium-utility-ui.bin
 var embeddedUIBinary []byte
 
-const InstallerVersion = "1.2.0"
+//go:embed payload/app-icon.ico
+var embeddedAppIcon []byte
+
+const InstallerVersion = "1.2.1"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -154,18 +157,77 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		}
 	}
 
-	// 3. Configure environment variables & User PATH
+	destIconPath := filepath.Join(installDir, "app-icon.ico")
+	if len(embeddedAppIcon) > 64 {
+		_ = os.WriteFile(destIconPath, embeddedAppIcon, 0644)
+	} else if icoData, err := os.ReadFile(filepath.Join(exeDir, "app-icon.ico")); err == nil && len(icoData) > 64 {
+		_ = os.WriteFile(destIconPath, icoData, 0644)
+	}
+
+	// 3. Detect previous installation & preserve user configuration / custom database paths
 	cfgPath := filepath.Join(dataDir, "aronium-util.yaml")
 	stateDBPath := filepath.Join(dataDir, "aronium_utility_state.db")
 	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
+
+	_, cfgErr := os.Stat(cfgPath)
+	_, accErr := os.Stat(accountsDBPath)
+	_, binErr := os.Stat(destCLIBin)
+	isUpgrade := cfgErr == nil || accErr == nil || binErr == nil
+
+	var cfg *config.Config
+	if isUpgrade {
+		fmt.Println("[Upgrade] Instalación previa detectada. Preservando configuración y datos existentes...")
+		if cfgErr == nil {
+			if existing, lErr := config.Load(cfgPath); lErr == nil && existing != nil {
+				cfg = existing
+			}
+		}
+	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+		cfg.StoreID = storeID
+		cfg.CashRegisterID = registerID
+		cfg.PosDBPath = posDB
+		cfg.StateDBPath = stateDBPath
+		cfg.AccountsDBPath = accountsDBPath
+		cfg.GoogleDrive.TokenVaultPath = filepath.Join(dataDir, "gdrive.token.enc")
+		cfg.GoogleDrive.LocalDriveSyncDir = filepath.Join(dataDir, "GoogleDriveSync")
+		cfg.Backup.BackupDir = filepath.Join(dataDir, "backups")
+	} else {
+		if cfg.StoreID == "" {
+			cfg.StoreID = storeID
+		}
+		if cfg.CashRegisterID == "" {
+			cfg.CashRegisterID = registerID
+		}
+		if cfg.PosDBPath == "" {
+			cfg.PosDBPath = posDB
+		}
+		if cfg.StateDBPath == "" {
+			cfg.StateDBPath = stateDBPath
+		}
+		if cfg.AccountsDBPath == "" {
+			cfg.AccountsDBPath = accountsDBPath
+		}
+		if cfg.GoogleDrive.TokenVaultPath == "" {
+			cfg.GoogleDrive.TokenVaultPath = filepath.Join(dataDir, "gdrive.token.enc")
+		}
+		if cfg.GoogleDrive.LocalDriveSyncDir == "" {
+			cfg.GoogleDrive.LocalDriveSyncDir = filepath.Join(dataDir, "GoogleDriveSync")
+		}
+		if cfg.Backup.BackupDir == "" {
+			cfg.Backup.BackupDir = filepath.Join(dataDir, "backups")
+		}
+	}
+
 	envVars := map[string]string{
 		"ARONIUM_UTIL_HOME":   dataDir,
 		"ARONIUM_UTIL_CONFIG": cfgPath,
-		"ARONIUM_POS_DB":      posDB,
-		"ARONIUM_STATE_DB":    stateDBPath,
-		"ARONIUM_ACCOUNTS_DB": accountsDBPath,
-		"ARONIUM_STORE_ID":    storeID,
-		"ARONIUM_REGISTER_ID": registerID,
+		"ARONIUM_POS_DB":      cfg.PosDBPath,
+		"ARONIUM_STATE_DB":    cfg.StateDBPath,
+		"ARONIUM_ACCOUNTS_DB": cfg.AccountsDBPath,
+		"ARONIUM_STORE_ID":    cfg.StoreID,
+		"ARONIUM_REGISTER_ID": cfg.CashRegisterID,
 		"ARONIUM_CLI_BIN":     destCLIBin,
 		"ARONIUM_UI_BIN":      destUIBin,
 	}
@@ -175,24 +237,24 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		return err
 	}
 
-	// 4. Write default configuration file aronium-util.yaml & initialize dedicated cuentas.db
-	fmt.Printf("[4/5] Generando configuración declarativa (%s) y base de cuentas (%s)...\n", cfgPath, accountsDBPath)
-	cfg := config.DefaultConfig()
-	cfg.StoreID = storeID
-	cfg.CashRegisterID = registerID
-	cfg.PosDBPath = posDB
-	cfg.StateDBPath = stateDBPath
-	cfg.AccountsDBPath = accountsDBPath
-	cfg.GoogleDrive.TokenVaultPath = filepath.Join(dataDir, "gdrive.token.enc")
-	cfg.GoogleDrive.LocalDriveSyncDir = filepath.Join(dataDir, "GoogleDriveSync")
-	cfg.Backup.BackupDir = filepath.Join(dataDir, "backups")
+	// 4. Write updated configuration aronium-util.yaml & run automatic lossless schema migration on cuentas.db
+	fmt.Printf("[4/5] Verificando configuración (%s) y migrando base de cuentas (%s)...\n", cfgPath, cfg.AccountsDBPath)
 	if err := cfg.Save(cfgPath); err != nil {
 		return fmt.Errorf("error guardando aronium-util.yaml: %w", err)
 	}
-	if accDB, err := accounts.OpenAccountsDB(accountsDBPath); err != nil {
-		return fmt.Errorf("error inicializando cuentas.db: %w", err)
-	} else if accDB != nil {
-		_ = accDB.Close()
+	migRep, err := accounts.MigrateAccountsDB(cfg.AccountsDBPath)
+	if err != nil {
+		return fmt.Errorf("error inicializando/migrando cuentas.db: %w", err)
+	}
+	if migRep.Migrated {
+		fmt.Printf("[OK] Base de cuentas migrada (esquema v%d -> v%d): %d cuenta(s), %d movimiento(s) y %d artículo(s) preservados.\n",
+			migRep.PreviousVersion, migRep.CurrentVersion, migRep.AccountsPreserved, migRep.MovementsPreserved, migRep.ItemsPreserved)
+		if migRep.BackupPath != "" {
+			fmt.Printf("     Respaldo previo a migración guardado en: %s\n", migRep.BackupPath)
+		}
+	} else if isUpgrade {
+		fmt.Printf("[OK] Esquema cuentas.db v%d verificado (%d cuenta(s), %d movimiento(s) intactos).\n",
+			migRep.CurrentVersion, migRep.AccountsPreserved, migRep.MovementsPreserved)
 	}
 
 	// 5. Register automatic startup on Windows boot/logon (.lnk Startup folder) + Desktop shortcut for Aronium Utility UI
@@ -258,12 +320,19 @@ func createWindowsDesktopShortcut(uiExePath string) {
 	if runtime.GOOS != "windows" {
 		return
 	}
+	iconLoc := uiExePath + ",0"
+	icoCandidate := filepath.Join(filepath.Dir(uiExePath), "app-icon.ico")
+	if info, err := os.Stat(icoCandidate); err == nil && info.Size() > 64 {
+		iconLoc = icoCandidate + ",0"
+	}
 	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	ps := fmt.Sprintf(
-		`$WshShell = New-Object -ComObject WScript.Shell; $Desktop = [Environment]::GetFolderPath('Desktop'); $Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Aronium Utility UI.lnk')); $Shortcut.TargetPath = '%s'; $Shortcut.WorkingDirectory = '%s'; $Shortcut.IconLocation = '%s,0'; $Shortcut.Description = 'Aronium Utility UI (Cuentas de Crédito, Escáner e Inventario Neto)'; $Shortcut.Save()`,
-		esc(uiExePath), esc(filepath.Dir(uiExePath)), esc(uiExePath),
+		`$WshShell = New-Object -ComObject WScript.Shell; $Desktop = [Environment]::GetFolderPath('Desktop'); $Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Aronium Utility UI.lnk')); $Shortcut.TargetPath = '%s'; $Shortcut.WorkingDirectory = '%s'; $Shortcut.IconLocation = '%s'; $Shortcut.Description = 'Aronium Utility UI (Cuentas de Crédito, Escáner e Inventario Neto)'; $Shortcut.Save()`,
+		esc(uiExePath), esc(filepath.Dir(uiExePath)), esc(iconLoc),
 	)
 	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps).Run()
+	_ = exec.Command("ie4uinit.exe", "-show").Run()
+	_ = exec.Command("ie4uinit.exe", "-ClearIconCache").Run()
 }
 
 func runUninstall(installDir, dataDir string) error {
@@ -275,6 +344,7 @@ func runUninstall(installDir, dataDir string) error {
 	}
 	_ = os.Remove(filepath.Join(installDir, cliBinName))
 	_ = os.Remove(filepath.Join(installDir, uiBinName))
+	_ = os.Remove(filepath.Join(installDir, "app-icon.ico"))
 	_ = os.Remove(filepath.Join(dataDir, "aronium-env.profile"))
 
 	if sp := service.StartupShortcutPath(); sp != "" {

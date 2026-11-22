@@ -125,7 +125,11 @@ export interface AccountMovement {
 }
 
 export interface CustomerAccount {
+  account_key: string;
   id: string;
+  id_prefix?: string;
+  id_number?: string;
+  shared_id_count?: number;
   nombre: string;
   telefono: string;
   metodo_pago: string;

@@ -117,6 +117,11 @@ func (m *Manager) installStartupShortcut() (string, error) {
 		return "", fmt.Errorf("APPDATA environment variable not set")
 	}
 	_ = os.MkdirAll(filepath.Dir(shortcutPath), 0o755)
+	iconLoc := m.BinaryPath + ",0"
+	icoCandidate := filepath.Join(filepath.Dir(m.BinaryPath), "app-icon.ico")
+	if info, err := os.Stat(icoCandidate); err == nil && info.Size() > 64 {
+		iconLoc = icoCandidate + ",0"
+	}
 	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	psScript := fmt.Sprintf(
 		"$ws = New-Object -ComObject WScript.Shell; "+
@@ -125,15 +130,16 @@ func (m *Manager) installStartupShortcut() (string, error) {
 			"$s.Arguments = 'watch --config \"%s\"'; "+
 			"$s.WorkingDirectory = '%s'; "+
 			"$s.WindowStyle = 7; "+
-			"$s.IconLocation = '%s,0'; "+
+			"$s.IconLocation = '%s'; "+
 			"$s.Description = 'Aronium Utility Background Watcher & Sync'; "+
 			"$s.Save()",
-		esc(shortcutPath), esc(m.BinaryPath), esc(m.ConfigPath), esc(filepath.Dir(m.BinaryPath)), esc(m.BinaryPath),
+		esc(shortcutPath), esc(m.BinaryPath), esc(m.ConfigPath), esc(filepath.Dir(m.BinaryPath)), esc(iconLoc),
 	)
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
+	_ = exec.Command("ie4uinit.exe", "-show").Run()
 	return shortcutPath, nil
 }
 

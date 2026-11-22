@@ -34,7 +34,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
 )
 
-const Version = "1.2.0"
+const Version = "1.2.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -134,9 +134,9 @@ COMANDOS PRINCIPALES:
 EJEMPLOS RÁPIDOS:
   aronium-util ui
   aronium-util init --pos-db "C:\Users\Caja\AppData\Local\Aronium\Data\pos.db" --register POS-01
-  aronium-util accounts create --id "102030" --name "Juan López" --phone "5551234" --payment-method "Efectivo" --limit 2000000 --description "Cliente frecuente"
+  aronium-util accounts create --id "Parques-18502" --name "Ana Gómez" --payment-method "QR" --limit 2000000
   aronium-util catalog search --barcode "7701234500011"
-  aronium-util accounts pay --account-id "102030" --amount 500000 --note "Abono mensual"
+  aronium-util accounts pay --account-id "Parques-18502" --name "Ana Gómez" --amount 500000 --payment-method "QR"
   aronium-util drive login
   aronium-util sync
 `, Version)
@@ -235,23 +235,46 @@ func runInit(args []string) error {
 		return err
 	}
 
-	cfg := config.DefaultConfig()
-	if *posDB != "" {
+	passed := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
+
+	targetCfgPath := *cfgPath
+	if targetCfgPath == "" {
+		targetCfgPath = config.DefaultConfigPath()
+	}
+
+	var cfg *config.Config
+	if _, statErr := os.Stat(targetCfgPath); statErr == nil {
+		if existing, lErr := config.Load(targetCfgPath); lErr == nil && existing != nil {
+			cfg = existing
+		}
+	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+
+	if passed["pos-db"] && *posDB != "" {
 		cfg.PosDBPath = *posDB
 	}
-	if *accountsDB != "" {
+	if passed["accounts-db"] && *accountsDB != "" {
 		cfg.AccountsDBPath = *accountsDB
 	}
-	cfg.StoreID = *storeID
-	cfg.StoreName = *storeName
-	cfg.CashRegisterID = *registerID
-	if *driveDir != "" {
+	if passed["store-id"] {
+		cfg.StoreID = *storeID
+	}
+	if passed["store-name"] {
+		cfg.StoreName = *storeName
+	}
+	if passed["register"] {
+		cfg.CashRegisterID = *registerID
+	}
+	if passed["drive-dir"] && *driveDir != "" {
 		cfg.GoogleDrive.LocalDriveSyncDir = *driveDir
 	}
-	if *clientID != "" {
+	if passed["gdrive-client-id"] && *clientID != "" {
 		cfg.GoogleDrive.ClientID = *clientID
 	}
-	if *sheetID != "" {
+	if passed["gsheet-id"] && *sheetID != "" {
 		cfg.GoogleDrive.MasterSpreadsheetID = *sheetID
 	}
 
@@ -263,19 +286,14 @@ func runInit(args []string) error {
 		}
 	}
 
-	targetCfgPath := *cfgPath
-	if targetCfgPath == "" {
-		targetCfgPath = config.DefaultConfigPath()
-	}
 	if err := cfg.Save(targetCfgPath); err != nil {
 		return err
 	}
 
-	// Initialize dedicated accounts DB (cuentas.db) immediately during init/install
-	if accConn, err := accounts.OpenAccountsDB(cfg.AccountsDBPath); err == nil {
-		_ = accConn.Close()
-	} else {
-		return fmt.Errorf("no se pudo inicializar cuentas.db: %w", err)
+	// Initialize & migrate dedicated accounts DB (cuentas.db) preserving any prior schema/data
+	migRep, err := accounts.MigrateAccountsDB(cfg.AccountsDBPath)
+	if err != nil {
+		return fmt.Errorf("no se pudo inicializar/migrar cuentas.db: %w", err)
 	}
 
 	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
@@ -287,14 +305,17 @@ func runInit(args []string) error {
 	_, _ = regMgr.ClaimIdentity(cfg.CashRegisterID, cfg.CashRegisterName, "", true)
 
 	if *jsonOut {
-		return json.NewEncoder(os.Stdout).Encode(cfg)
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"config":           cfg,
+			"schema_migration": migRep,
+		})
 	}
 
 	fmt.Printf("[✓] Configuración inicializada en: %s\n", targetCfgPath)
 	fmt.Printf("    • Comercio:          %s (%s)\n", cfg.StoreName, cfg.StoreID)
 	fmt.Printf("    • Caja Registradora: %s\n", cfg.CashRegisterID)
 	fmt.Printf("    • Base Aronium:      %s\n", cfg.PosDBPath)
-	fmt.Printf("    • Base de Cuentas:   %s\n", cfg.AccountsDBPath)
+	fmt.Printf("    • Base de Cuentas:   %s (v%d, %d cuentas preservadas)\n", cfg.AccountsDBPath, migRep.CurrentVersion, migRep.AccountsPreserved)
 	fmt.Printf("    • Base de Estado:    %s\n", cfg.StateDBPath)
 	fmt.Printf("    • Carpeta Drive:     %s\n", filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName))
 
@@ -1472,12 +1493,15 @@ func runAccounts(args []string) error {
 
 	case "create":
 		fs := flag.NewFlagSet("accounts create", flag.ContinueOnError)
-		id := fs.String("id", "", "ID / Documento único del cliente (obligatorio)")
-		name := fs.String("name", "", "Nombre completo del cliente (obligatorio)")
-		phone := fs.String("phone", "", "Teléfono de contacto")
-		payMethod := fs.String("payment-method", "Efectivo", "Método de pago acordado")
+		accountKey := fs.String("account-key", "", "Clave interna única de la cuenta (opcional)")
+		id := fs.String("id", "", "ID compuesto de la cuenta (Ej. Parques-18502)")
+		idPrefix := fs.String("id-prefix", "", "Primera parte textual del ID (ej. Parques)")
+		idNumber := fs.String("id-number", "", "Segunda parte numérica del ID (ej. 18502)")
+		name := fs.String("name", "", "Nombre completo del cliente (obligatorio, separa cuentas con el mismo ID)")
+		phone := fs.String("phone", "", "Teléfono de contacto (opcional)")
+		payMethod := fs.String("payment-method", "Efectivo", "Método de pago acordado (Efectivo, QR, Transferencia, Tarjeta, Otro)")
 		limit := fs.Int64("limit", 0, "Tope de crédito (entero)")
-		desc := fs.String("description", "", "Descripción o notas del cliente")
+		desc := fs.String("description", "", "Descripción o referencia del cliente (opcional)")
 		amount := fs.Int64("amount", 0, "Cargo inicial opcional si no se detallan artículos")
 		itemsJSON := fs.String("items-json", "", "Arreglo JSON opcional de artículos anotados")
 		note := fs.String("note", "", "Nota del movimiento inicial")
@@ -1504,7 +1528,10 @@ func runAccounts(args []string) error {
 
 		enforceStrict := *strictLimit || strings.EqualFold(cfg.Credit.CreditLimitPolicy, "strict")
 		acc, err := mgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+			AccountKey:          *accountKey,
 			ID:                  *id,
+			IDPrefix:            *idPrefix,
+			IDNumber:            *idNumber,
 			Name:                *name,
 			Phone:               *phone,
 			PaymentMethod:       *payMethod,
@@ -1536,7 +1563,8 @@ func runAccounts(args []string) error {
 
 	case "charge":
 		fs := flag.NewFlagSet("accounts charge", flag.ContinueOnError)
-		accountID := fs.String("account-id", "", "ID de la cuenta existente")
+		accountID := fs.String("account-id", "", "ID o account_key de la cuenta existente")
+		custName := fs.String("name", "", "Nombre del cliente (para desambiguar IDs compartidos)")
 		amount := fs.Int64("amount", 0, "Monto del cargo (si no se pasan artículos)")
 		itemsJSON := fs.String("items-json", "", "Arreglo JSON de artículos anotados")
 		payMethod := fs.String("payment-method", "", "Método de pago o referencia")
@@ -1565,6 +1593,7 @@ func runAccounts(args []string) error {
 		enforceStrict := *strictLimit || strings.EqualFold(cfg.Credit.CreditLimitPolicy, "strict")
 		acc, err := mgr.RecordMovement(accounts.MovementRequest{
 			AccountID:     *accountID,
+			CustomerName:  *custName,
 			Type:          accounts.MovementCharge,
 			Amount:        *amount,
 			PaymentMethod: *payMethod,
@@ -1592,9 +1621,10 @@ func runAccounts(args []string) error {
 
 	case "pay", "abono":
 		fs := flag.NewFlagSet("accounts pay", flag.ContinueOnError)
-		accountID := fs.String("account-id", "", "ID de la cuenta")
+		accountID := fs.String("account-id", "", "ID o account_key de la cuenta")
+		custName := fs.String("name", "", "Nombre del cliente cuando varias cuentas comparten el mismo ID")
 		amount := fs.Int64("amount", 0, "Monto del pago / abono recibido")
-		payMethod := fs.String("payment-method", "Efectivo", "Método con el que pagó el cliente")
+		payMethod := fs.String("payment-method", "Efectivo", "Método con el que pagó el cliente (Efectivo, QR, Transferencia, Tarjeta, Otro)")
 		note := fs.String("note", "Pago recibido en cuenta (sin afectar cierre Aronium)", "Nota del pago")
 		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
@@ -1611,6 +1641,7 @@ func runAccounts(args []string) error {
 
 		acc, err := mgr.RecordMovement(accounts.MovementRequest{
 			AccountID:     *accountID,
+			CustomerName:  *custName,
 			Type:          accounts.MovementPayment,
 			Amount:        *amount,
 			PaymentMethod: *payMethod,
@@ -1635,9 +1666,63 @@ func runAccounts(args []string) error {
 			*amount, acc.ID, acc.Name, acc.CurrentBalance)
 		return nil
 
+	case "by-id":
+		fs := flag.NewFlagSet("accounts by-id", flag.ContinueOnError)
+		sharedID := fs.String("id", "", "ID compartido a consultar (ej. Parques-18502)")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		target := *sharedID
+		if target == "" && len(fs.Args()) > 0 {
+			target = fs.Args()[0]
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+		list, err := mgr.ListAccountsByID(target)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"id":       target,
+				"count":    len(list),
+				"accounts": list,
+			})
+		}
+		fmt.Printf("=== CUENTAS CON ID '%s' (%d encontradas) ===\n", target, len(list))
+		for _, acc := range list {
+			fmt.Printf("• [%s] %-24s | Key: %s | Saldo: $%d | Método: %s\n",
+				acc.ID, acc.Name, acc.AccountKey, acc.CurrentBalance, acc.PaymentMethod)
+		}
+		return nil
+
+	case "migrate":
+		fs := flag.NewFlagSet("accounts migrate", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		migRep, err := accounts.MigrateAccountsDB(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(migRep)
+		}
+		fmt.Printf("[✓] cuentas.db esquema v%d (previo v%d, migrado=%v, cuentas=%d, movimientos=%d)\n",
+			migRep.CurrentVersion, migRep.PreviousVersion, migRep.Migrated, migRep.AccountsPreserved, migRep.MovementsPreserved)
+		return nil
+
 	case "status":
 		fs := flag.NewFlagSet("accounts status", flag.ContinueOnError)
-		accountID := fs.String("account-id", "", "ID de la cuenta")
+		accountID := fs.String("account-id", "", "ID o account_key de la cuenta")
+		custName := fs.String("name", "", "Nombre del cliente cuando varias cuentas comparten ID")
 		state := fs.String("state", "ACTIVA", "Estado: ACTIVA, BLOQUEADA, CERRADA")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
@@ -1649,10 +1734,10 @@ func runAccounts(args []string) error {
 			return err
 		}
 		defer mgr.Close()
-		if err := mgr.UpdateStatus(*accountID, accounts.AccountStatus(strings.ToUpper(*state))); err != nil {
+		if err := mgr.UpdateStatusByName(*accountID, *custName, accounts.AccountStatus(strings.ToUpper(*state))); err != nil {
 			return err
 		}
-		acc, _ := mgr.GetAccount(*accountID)
+		acc, _ := mgr.GetAccountByIDAndName(*accountID, *custName)
 		if *jsonOut {
 			return json.NewEncoder(os.Stdout).Encode(acc)
 		}
@@ -1661,7 +1746,8 @@ func runAccounts(args []string) error {
 
 	case "statement":
 		fs := flag.NewFlagSet("accounts statement", flag.ContinueOnError)
-		accountID := fs.String("account-id", "", "ID de la cuenta")
+		accountID := fs.String("account-id", "", "ID o account_key de la cuenta")
+		custName := fs.String("name", "", "Nombre del cliente cuando varias cuentas comparten ID")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
@@ -1676,7 +1762,7 @@ func runAccounts(args []string) error {
 		if targetID == "" && len(fs.Args()) > 0 {
 			targetID = fs.Args()[0]
 		}
-		acc, err := mgr.GetAccount(targetID)
+		acc, err := mgr.GetAccountByIDAndName(targetID, *custName)
 		if err != nil {
 			return err
 		}
@@ -1691,7 +1777,7 @@ func runAccounts(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, status, statement)", sub)
+		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, migrate, status, statement)", sub)
 	}
 }
 

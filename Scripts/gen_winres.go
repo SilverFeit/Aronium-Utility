@@ -28,9 +28,9 @@ import (
 const (
 	appVersionMajor = 1
 	appVersionMinor = 2
-	appVersionPatch = 0
+	appVersionPatch = 1
 	appVersionBuild = 0
-	appVersionStr   = "1.2.0.0"
+	appVersionStr   = "1.2.1.0"
 )
 
 type targetBinary struct {
@@ -58,7 +58,7 @@ var targets = []targetBinary{
 	},
 	{
 		Dir:              "cmd/aronium-util-setup",
-		FileDescription:  "Aronium Utility Unified Setup Installer v1.2.0 (CLI + UI)",
+		FileDescription:  "Aronium Utility Unified Setup Installer v1.2.1 (CLI + UI)",
 		InternalName:     "aronium-util-setup.exe",
 		OriginalFilename: "aronium-util-setup-x64.exe",
 		ProductName:      "Aronium Utility Installer",
@@ -75,6 +75,9 @@ func main() {
 	entries := make([]iconEntry, 0, len(sizes))
 	for _, sz := range sizes {
 		img := renderAppIcon(sz)
+		if sz == 64 {
+			verifyIconBrightness(img)
+		}
 		if sz == 256 {
 			var pngBuf bytes.Buffer
 			if err := png.Encode(&pngBuf, img); err != nil {
@@ -95,14 +98,19 @@ func main() {
 	}
 
 	icoBytes := buildICOFile(entries)
-	icoPath := filepath.Join(rootDir, "docs", "assets", "app-icon.ico")
-	if err := os.MkdirAll(filepath.Dir(icoPath), 0o755); err != nil {
-		fatalf("mkdir docs/assets: %v", err)
+	for _, relPath := range []string{
+		filepath.Join("docs", "assets", "app-icon.ico"),
+		filepath.Join("cmd", "aronium-util-setup", "payload", "app-icon.ico"),
+	} {
+		outPath := filepath.Join(rootDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			fatalf("mkdir %s: %v", filepath.Dir(outPath), err)
+		}
+		if err := os.WriteFile(outPath, icoBytes, 0o644); err != nil {
+			fatalf("write %s: %v", outPath, err)
+		}
 	}
-	if err := os.WriteFile(icoPath, icoBytes, 0o644); err != nil {
-		fatalf("write %s: %v", icoPath, err)
-	}
-	fmt.Printf("[ok] Generated multi-resolution icon: %s (%d bytes)\n", icoPath, len(icoBytes))
+	fmt.Printf("[ok] Generated multi-resolution icon: docs/assets/app-icon.ico & payload/app-icon.ico (%d bytes)\n", len(icoBytes))
 
 	manifestBytes := buildAppManifest()
 	grpIconBytes := buildGroupIconData(entries)
@@ -141,19 +149,42 @@ type iconEntry struct {
 	data   []byte
 }
 
-// renderAppIcon renders the Aronium Utility badge (rounded navy/sky card + SQLite/Drive split motif)
-// cleanly with 4x supersampling so even 16x16 and 32x32 taskbar icons look sharp.
+func verifyIconBrightness(img *image.NRGBA) {
+	b := img.Bounds()
+	var sum float64
+	var count float64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.NRGBAAt(x, y)
+			if c.A >= 128 {
+				sum += (float64(c.R) + float64(c.G) + float64(c.B)) / 3.0
+				count++
+			}
+		}
+	}
+	if count == 0 {
+		fatalf("rendered icon has no opaque pixels")
+	}
+	avg := sum / count
+	if avg < 80 {
+		fatalf("rendered icon average RGB brightness too low (%.1f < 80)", avg)
+	}
+	fmt.Printf("[ok] Verified 64x64 icon average brightness: %.1f/255 (%d opaque pixels)\n", avg, int(count))
+}
+
+// renderAppIcon renders the Aronium Utility badge cleanly with 4x supersampling
+// so 16x16..256x256 Windows Explorer and Desktop shortcut icons look crisp and vibrant.
 func renderAppIcon(size int) *image.NRGBA {
 	const ss = 4
 	w := size * ss
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 
-	// Normalize pixel coordinates into [0..256] vector space matching docs/assets/app-icon.svg
 	scale := 256.0 / float64(w)
+	samples := float64(ss * ss)
 
 	for py := 0; py < size; py++ {
 		for px := 0; px < size; px++ {
-			var rSum, gSum, bSum, aSum float64
+			var rSum, gSum, bSum, afSum float64
 			for sy := 0; sy < ss; sy++ {
 				for sx := 0; sx < ss; sx++ {
 					vx := (float64(px*ss+sx) + 0.5) * scale
@@ -163,17 +194,16 @@ func renderAppIcon(size int) *image.NRGBA {
 					rSum += float64(c.R) * af
 					gSum += float64(c.G) * af
 					bSum += float64(c.B) * af
-					aSum += float64(c.A)
+					afSum += af
 				}
 			}
-			samples := float64(ss * ss)
-			avgA := aSum / samples
-			if avgA < 0.5 {
+			avgA := (afSum / samples) * 255.0
+			if avgA < 0.5 || afSum <= 1e-6 {
 				continue
 			}
-			outR := uint8(clamp255(rSum / avgA))
-			outG := uint8(clamp255(gSum / avgA))
-			outB := uint8(clamp255(bSum / avgA))
+			outR := uint8(clamp255(rSum / afSum))
+			outG := uint8(clamp255(gSum / afSum))
+			outB := uint8(clamp255(bSum / afSum))
 			outA := uint8(clamp255(avgA))
 			img.SetNRGBA(px, py, color.NRGBA{R: outR, G: outG, B: outB, A: outA})
 		}
@@ -188,84 +218,80 @@ func sampleVectorIcon(x, y float64) color.NRGBA {
 		return color.NRGBA{0, 0, 0, 0}
 	}
 
-	// Background diagonal gradient: #0f172a -> #1e293b -> #0284c7
+	// Vibrant diagonal gradient: royal blue (#1d4ed8) -> bright sky (#0284c7) -> vivid teal (#0d9488)
 	t := clamp01((x + y) / 512.0)
 	var bg color.NRGBA
-	if t < 0.55 {
-		bg = lerpColor(color.NRGBA{0x0f, 0x17, 0x2a, 255}, color.NRGBA{0x1e, 0x29, 0x3b, 255}, t/0.55)
+	if t < 0.5 {
+		bg = lerpColor(color.NRGBA{0x1d, 0x4e, 0xd8, 255}, color.NRGBA{0x02, 0x84, 0xc7, 255}, t/0.5)
 	} else {
-		bg = lerpColor(color.NRGBA{0x1e, 0x29, 0x3b, 255}, color.NRGBA{0x02, 0x84, 0xc7, 255}, (t-0.55)/0.45)
+		bg = lerpColor(color.NRGBA{0x02, 0x84, 0xc7, 255}, color.NRGBA{0x0d, 0x94, 0x88, 255}, (t-0.5)/0.5)
 	}
 
-	// Outer sky-blue border (#38bdf8, ~7px stroke)
-	if dOuter > -7.5 {
-		return color.NRGBA{0x38, 0xbd, 0xf8, 255}
+	// Outer crisp light-cyan border (#bae6fd, ~9px stroke for high contrast on dark/light Windows themes)
+	if dOuter > -9.0 {
+		return color.NRGBA{0xba, 0xe6, 0xfd, 255}
 	}
 
-	// Left: Database badge / cylinder motif centered near (82, 114)
-	// Cylinder body: x in [40, 124], y in [74, 154]
-	if x >= 40 && x <= 124 && y >= 74 && y <= 156 {
-		inTopEllipse := math.Pow((x-82)/42.0, 2)+math.Pow((y-78)/16.0, 2) <= 1.0
-		inBotEllipse := math.Pow((x-82)/42.0, 2)+math.Pow((y-140)/16.0, 2) <= 1.0
-		inBody := x >= 40 && x <= 124 && y >= 78 && y <= 140
+	// Left: Bright SQLite cylinder motif centered near (80, 110)
+	if x >= 38 && x <= 122 && y >= 62 && y <= 156 {
+		inTopEllipse := math.Pow((x-80)/42.0, 2)+math.Pow((y-78)/16.0, 2) <= 1.0
+		inBotEllipse := math.Pow((x-80)/42.0, 2)+math.Pow((y-140)/16.0, 2) <= 1.0
+		inBody := x >= 38 && x <= 122 && y >= 78 && y <= 140
 		if inTopEllipse || inBody || inBotEllipse {
-			// Border outline
-			topRim := math.Abs(math.Sqrt(math.Pow((x-82)/42.0, 2)+math.Pow((y-78)/16.0, 2))-1.0) < 0.14
-			midBand := math.Abs(y-108) < 3.5 && x >= 44 && x <= 120
-			sideEdge := (x < 45 || x > 119) && y >= 78 && y <= 140
-			botRim := y > 136 && math.Abs(math.Sqrt(math.Pow((x-82)/42.0, 2)+math.Pow((y-140)/16.0, 2))-1.0) < 0.14
+			topRim := math.Abs(math.Sqrt(math.Pow((x-80)/42.0, 2)+math.Pow((y-78)/16.0, 2))-1.0) < 0.16
+			midBand := math.Abs(y-108) < 4.5 && x >= 42 && x <= 118
+			sideEdge := (x < 44 || x > 116) && y >= 78 && y <= 140
+			botRim := y > 136 && math.Abs(math.Sqrt(math.Pow((x-80)/42.0, 2)+math.Pow((y-140)/16.0, 2))-1.0) < 0.16
 			if topRim || sideEdge || botRim {
-				return color.NRGBA{0x7d, 0xd3, 0xfc, 255}
+				return color.NRGBA{0xff, 0xff, 0xff, 255}
 			}
 			if midBand {
-				return color.NRGBA{0xba, 0xe6, 0xfd, 255}
+				return color.NRGBA{0xe0, 0xf2, 0xfe, 255}
 			}
 			if inTopEllipse {
-				return color.NRGBA{0x02, 0x84, 0xc7, 255}
+				return color.NRGBA{0xba, 0xe6, 0xfd, 255}
 			}
-			return color.NRGBA{0x03, 0x69, 0xa1, 255}
+			return color.NRGBA{0x0e, 0xa5, 0xe9, 255}
 		}
 	}
 
-	// Right: Emerald Ledger Card centered at (182, 108), half-size (34, 48), radius 10
-	dCard := sdRoundedBox(x-182, y-108, 34, 48, 10)
+	// Right: Vivid Emerald Ledger Card centered at (182, 108), half-size (36, 48), radius 10
+	dCard := sdRoundedBox(x-182, y-108, 36, 48, 10)
 	if dCard <= 0 {
-		if dCard > -4.5 {
-			return color.NRGBA{0x34, 0xd3, 0x99, 255}
+		if dCard > -5.0 {
+			return color.NRGBA{0xec, 0xfd, 0xf5, 255}
 		}
-		// Three clean ledger lines inside card
-		if x >= 158 && x <= 206 {
-			if math.Abs(y-82) < 3.5 || math.Abs(y-102) < 3.5 || (math.Abs(y-122) < 3.5 && x <= 194) {
-				return color.NRGBA{0x6e, 0xe7, 0xb7, 255}
+		if x >= 156 && x <= 208 {
+			if math.Abs(y-82) < 4.2 || math.Abs(y-104) < 4.2 || (math.Abs(y-126) < 4.2 && x <= 196) {
+				return color.NRGBA{0xff, 0xff, 0xff, 255}
 			}
 		}
-		return color.NRGBA{0x06, 0x4e, 0x3b, 255}
+		return color.NRGBA{0x10, 0xb9, 0x81, 255}
 	}
 
-	// Center Sync Arrow from x=126 to x=156 around y=110
-	if x >= 122 && x <= 162 && y >= 94 && y <= 126 {
-		onShaft := math.Abs(y-110) <= 4.0 && x >= 126 && x <= 156
-		onHead := x >= 142 && x <= 158 && math.Abs(y-110) <= (158-x)*1.05
+	// Center Sync Arrow: bright yellow-gold -> crisp white
+	if x >= 120 && x <= 162 && y >= 90 && y <= 128 {
+		onShaft := math.Abs(y-109) <= 5.0 && x >= 122 && x <= 156
+		onHead := x >= 140 && x <= 159 && math.Abs(y-109) <= (159-x)*1.1
 		if onShaft || onHead {
-			return lerpColor(color.NRGBA{0x38, 0xbd, 0xf8, 255}, color.NRGBA{0x34, 0xd3, 0x99, 255}, clamp01((x-126)/30.0))
+			return lerpColor(color.NRGBA{0xfd, 0xe0, 0x47, 255}, color.NRGBA{0xff, 0xff, 0xff, 255}, clamp01((x-122)/36.0))
 		}
 	}
 
-	// Bottom badge bar at (128, 202), half-size (86, 19), radius 10
-	dPill := sdRoundedBox(x-128, y-202, 86, 19, 10)
+	// Bottom badge bar at (128, 202), half-size (86, 20), radius 10
+	dPill := sdRoundedBox(x-128, y-202, 86, 20, 10)
 	if dPill <= 0 {
-		if dPill > -3.5 {
-			return color.NRGBA{0x38, 0xbd, 0xf8, 255}
+		if dPill > -4.0 {
+			return color.NRGBA{0x7d, 0xd3, 0xfc, 255}
 		}
-		// Inner progress/CLI indicator bar
-		dBar := sdRoundedBox(x-128, y-202, 58, 4.5, 2)
+		dBar := sdRoundedBox(x-128, y-202, 58, 5.5, 2.5)
 		if dBar <= 0 {
 			if x < 140 {
 				return color.NRGBA{0x34, 0xd3, 0x99, 255}
 			}
 			return color.NRGBA{0x38, 0xbd, 0xf8, 255}
 		}
-		return color.NRGBA{0x0f, 0x17, 0x2a, 255}
+		return color.NRGBA{0x1e, 0x3a, 0x8a, 255}
 	}
 
 	return bg

@@ -128,14 +128,14 @@ JSON · SQLite (`pos.db` mode=ro + `aronium_utility_state.db`) · `.xlsx` · Goo
 The unified installer automatically:
 - Installs **`aronium-util.exe`** (Go CLI Engine) and **`aronium-utility-ui.exe`** (Aronium Utility UI) into `%LOCALAPPDATA%\Programs\AroniumUtility\`.
 - Adds `%LOCALAPPDATA%\Programs\AroniumUtility` to your Windows User **`PATH`** and configures `ARONIUM_*` environment variables (including `ARONIUM_ACCOUNTS_DB`) in `HKCU\Environment`.
-- Initializes `%LOCALAPPDATA%\AroniumUtility\cuentas.db` alongside `aronium-util.yaml`.
+- Detects previous installations automatically, preserves `aronium-util.yaml` & custom database paths, and runs automatic lossless schema migrations on `%LOCALAPPDATA%\AroniumUtility\cuentas.db` (saving a pre-migration `.v1.bak` backup).
 - Registers **`aronium-util.exe watch`** via a standard Windows Startup Folder shortcut (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aronium Utility Watcher.lnk`) so the CLI runs automatically on boot.
-- Creates a Desktop shortcut for **Aronium Utility UI** with its embedded multi-resolution icon.
+- Creates a Desktop shortcut for **Aronium Utility UI** with its embedded high-contrast multi-resolution icon (`app-icon.ico`).
 - **Authenticode Code-Signing:** All Windows executables carry embedded PE metadata (`VS_VERSION_INFO`, `asInvoker` manifest, app icon) and SHA-256 Authenticode signatures (`AroniumUtility-CodeSigning.cer` is bundled if you wish to import it into Windows *Trusted Publishers* / *Trusted Root Certification Authorities*).
 
 ### Option B — Portable `.zip` with `install.bat` / `install.ps1`
 
-1. Download **`Aronium-Utility-1.2.0-windows-x64.zip`** *(or `Aronium-Utility-1.2.0-windows-x86.zip`)*.
+1. Download **`Aronium-Utility-1.2.1-windows-x64.zip`** *(or `Aronium-Utility-1.2.1-windows-x86.zip`)*.
 2. Extract the archive and double-click **`install.bat`** *(or run `.\install.ps1` in PowerShell)*.
 
 ---
@@ -155,12 +155,15 @@ aronium-util drive status
 # Synchronize Inventory + Customer Credit Accounts to Google Drive & Sheets
 aronium-util sync
 
-# Manage Dedicated Customer Credit Accounts (cuentas.db), Charges, Payments & Statements
+# Manage Dedicated Customer Credit Accounts (cuentas.db), Shared Compound IDs (Texto-Numero), Payments & Statements
 aronium-util accounts list
-aronium-util accounts create --id "1020304050" --name "Carlos Mendoza" --phone "3105559988" --payment-method "Efectivo" --limit 250000 --description "Cliente frecuente"
-aronium-util accounts charge "1020304050" --amount 45000 --note "Mercado semanal"
-aronium-util accounts pay "1020304050" --amount 20000 --payment-method "Transferencia"
-aronium-util accounts statement "1020304050"
+aronium-util accounts create --id "Parques-18502" --name "Ana Gómez" --payment-method "QR" --limit 300000
+aronium-util accounts create --id "Parques-18502" --name "Carlos Ruiz" --payment-method "QR" --limit 300000
+aronium-util accounts by-id --id "Parques-18502"
+aronium-util accounts charge --account-id "Parques-18502" --name "Ana Gómez" --amount 45000 --note "Mercado semanal"
+aronium-util accounts pay --account-id "Parques-18502" --name "Ana Gómez" --amount 20000 --payment-method "QR"
+aronium-util accounts statement --account-id "Parques-18502" --name "Ana Gómez"
+aronium-util accounts migrate
 
 # Search live pos.db catalog & barcodes from CLI
 aronium-util catalog search --barcode "7701234500011"
@@ -200,7 +203,7 @@ aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium
 ```text
 Aronium-Utility/
 ├── go.mod                               # Pure-Go module (modernc.org/sqlite + gopkg.in/yaml.v3 — zero CGO)
-├── VERSION                              # Single source of truth for release version (1.2.0)
+├── VERSION                              # Single source of truth for release version (1.2.1)
 ├── cmd/
 │   ├── aronium-util/                    # Main Go CLI & background startup watcher (`aronium-util.exe`)
 │   ├── aronium-utility-ui/              # Desktop UI executable (`aronium-utility-ui.exe`) consuming Go CLI sidecar

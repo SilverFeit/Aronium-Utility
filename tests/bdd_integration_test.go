@@ -4,8 +4,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"io/fs"
 	"net/http"
@@ -896,5 +899,205 @@ func TestBDD_DedicatedAccountsDB_Scanner_FrozenPrices_And_NetInventory(t *testin
 	bakAcc, err := bakMgr.GetAccount("1020304050")
 	if err != nil || bakAcc.CurrentBalance != expectedTotal-50000 {
 		t.Fatalf("expected backed-up account balance %d, got %+v (err=%v)", expectedTotal-50000, bakAcc, err)
+	}
+}
+
+// BDD Scenario 11 (v1.2.1): Icon Brightness Regression Check, Lossless v1->v2 Schema Migration,
+// Compound Shared IDs (Texto-Numero), Optional Fields, QR Payment Method & Quick Punctual Values
+func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigration(t *testing.T) {
+	// 1. Verify docs/assets/app-icon.ico is vibrant (not black) via its embedded 256x256 PNG frame
+	icoPath := filepath.Join("..", "docs", "assets", "app-icon.ico")
+	if icoRaw, err := os.ReadFile(icoPath); err == nil && len(icoRaw) > 64 {
+		entrySize := int(binary.LittleEndian.Uint32(icoRaw[6+8 : 6+12]))
+		entryOffset := int(binary.LittleEndian.Uint32(icoRaw[6+12 : 6+16]))
+		if entryOffset+entrySize <= len(icoRaw) {
+			frame := icoRaw[entryOffset : entryOffset+entrySize]
+			if bytes.HasPrefix(frame, []byte("\x89PNG\r\n\x1a\n")) {
+				img, pErr := png.Decode(bytes.NewReader(frame))
+				if pErr != nil {
+					t.Fatalf("decode 256px PNG in app-icon.ico: %v", pErr)
+				}
+				b := img.Bounds()
+				var sum float64
+				var cnt float64
+				for y := b.Min.Y; y < b.Max.Y; y++ {
+					for x := b.Min.X; x < b.Max.X; x++ {
+						r, g, bl, a := img.At(x, y).RGBA()
+						if a > 0x8000 {
+							sum += float64((r>>8)+(g>>8)+(bl>>8)) / 3.0
+							cnt++
+						}
+					}
+				}
+				avgBrightness := sum / cnt
+				if cnt == 0 || avgBrightness < 100 {
+					t.Fatalf("app-icon.ico appears too dark (avgBrightness=%.1f/255, opaque=%d)", avgBrightness, int(cnt))
+				}
+			}
+		}
+	}
+
+	// 2. Construct a legacy v1 cuentas.db (id TEXT PRIMARY KEY without account_key) and migrate losslessly to v2
+	tmpDir := t.TempDir()
+	accDBPath := filepath.Join(tmpDir, "cuentas.db")
+	legacyConn, err := sql.Open("sqlite", accDBPath)
+	if err != nil {
+		t.Fatalf("open legacy v1 sqlite: %v", err)
+	}
+	legacyDDL := `
+	CREATE TABLE cuentas (
+		id TEXT PRIMARY KEY,
+		nombre TEXT NOT NULL,
+		telefono TEXT NOT NULL DEFAULT '',
+		metodo_pago TEXT NOT NULL DEFAULT 'Efectivo',
+		tope_credito INTEGER NOT NULL DEFAULT 0,
+		descripcion TEXT NOT NULL DEFAULT '',
+		estado TEXT NOT NULL DEFAULT 'ACTIVA',
+		creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+		actualizado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE movimientos (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		cuenta_id TEXT NOT NULL REFERENCES cuentas(id) ON DELETE CASCADE,
+		tipo TEXT NOT NULL,
+		monto INTEGER NOT NULL,
+		metodo_pago_usado TEXT NOT NULL DEFAULT '',
+		nota TEXT NOT NULL DEFAULT '',
+		fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE movimiento_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		movimiento_id INTEGER NOT NULL REFERENCES movimientos(id) ON DELETE CASCADE,
+		aronium_product_id INTEGER NOT NULL DEFAULT 0,
+		codigo_barras TEXT NOT NULL DEFAULT '',
+		nombre_snapshot TEXT NOT NULL,
+		precio_unitario_snapshot INTEGER NOT NULL,
+		cantidad REAL NOT NULL DEFAULT 1,
+		subtotal INTEGER NOT NULL
+	);
+	INSERT INTO cuentas (id, nombre, telefono, metodo_pago, tope_credito, descripcion)
+		VALUES ('Parques-18502', 'Cliente Previo', '', 'QR', 200000, 'Residente Apto 18502');
+	INSERT INTO movimientos (id, cuenta_id, tipo, monto, metodo_pago_usado, nota)
+		VALUES (7, 'Parques-18502', 'CARGO', 15000, 'QR', 'Saldo heredado v1');
+	INSERT INTO movimiento_items (movimiento_id, aronium_product_id, codigo_barras, nombre_snapshot, precio_unitario_snapshot, cantidad, subtotal)
+		VALUES (7, 1, '7701234500011', 'Arroz v1', 7500, 2, 15000);
+	`
+	if _, err := legacyConn.Exec(legacyDDL); err != nil {
+		t.Fatalf("seed legacy v1 schema: %v", err)
+	}
+	_ = legacyConn.Close()
+
+	migRep, err := accounts.MigrateAccountsDB(accDBPath)
+	if err != nil {
+		t.Fatalf("MigrateAccountsDB failed: %v", err)
+	}
+	if !migRep.Migrated || migRep.PreviousVersion != 1 || migRep.CurrentVersion != 2 ||
+		migRep.AccountsPreserved != 1 || migRep.MovementsPreserved != 1 || migRep.ItemsPreserved != 1 {
+		t.Fatalf("unexpected migration report: %+v", migRep)
+	}
+	if _, err := os.Stat(migRep.BackupPath); err != nil {
+		t.Fatalf("expected v1 pre-migration backup at %s: %v", migRep.BackupPath, err)
+	}
+
+	accMgr, err := accounts.NewManager(accDBPath)
+	if err != nil {
+		t.Fatalf("NewManager post-migration failed: %v", err)
+	}
+	defer accMgr.Close()
+
+	// Ensure migrated v1 customer balance survived cleanly
+	prevAcc, err := accMgr.GetAccountByIDAndName("Parques-18502", "Cliente Previo")
+	if err != nil || prevAcc.CurrentBalance != 15000 {
+		t.Fatalf("migrated account balance mismatch: %+v (err=%v)", prevAcc, err)
+	}
+
+	// 3. Create 2 additional accounts sharing the SAME compound ID Parques-18502 (separated by nombre)
+	// with empty optional phone & description, QR payment method, and quick punctual values
+	anaAcc, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		IDPrefix:      "Parques",
+		IDNumber:      "18502",
+		Name:          "Ana Gómez",
+		Phone:         "", // optional
+		PaymentMethod: "QR",
+		CreditLimit:   300000,
+		Description:   "", // optional
+		Items: []accounts.MovementItemInput{
+			{AroniumProductID: 1, Barcode: "7701234500011", NameSnapshot: "Arroz 1kg", UnitPriceSnapshot: 4500, Quantity: 1},
+			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Tinto y dulces", UnitPriceSnapshot: 2100, Quantity: 1}, // $2.000 + $100 quick value
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Ana Gómez on shared Parques-18502 failed: %v", err)
+	}
+	if anaAcc.ID != "Parques-18502" || anaAcc.IDPrefix != "Parques" || anaAcc.IDNumber != "18502" ||
+		anaAcc.PaymentMethod != "QR" || anaAcc.CurrentBalance != 6600 {
+		t.Fatalf("unexpected Ana account state: %+v", anaAcc)
+	}
+
+	carlosAcc, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		IDPrefix:      "Parques",
+		IDNumber:      "18502",
+		Name:          "Carlos Ruiz",
+		PaymentMethod: "QR",
+		CreditLimit:   300000,
+		Items: []accounts.MovementItemInput{
+			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Almuerzo y jugo", UnitPriceSnapshot: 5000, Quantity: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Carlos Ruiz on shared Parques-18502 failed: %v", err)
+	}
+	if carlosAcc.CurrentBalance != 5000 {
+		t.Fatalf("unexpected Carlos balance: %+v", carlosAcc)
+	}
+
+	// 4. Listing by ID Parques-18502 must surface all accounts sharing that apartment ID
+	sharedList, err := accMgr.ListAccountsByID("Parques-18502")
+	if err != nil || len(sharedList) != 3 {
+		t.Fatalf("expected 3 accounts sharing Parques-18502, got %d (err=%v)", len(sharedList), err)
+	}
+	for _, s := range sharedList {
+		if s.SharedIDCount != 3 {
+			t.Fatalf("expected SharedIDCount=3 for %s, got %d", s.Name, s.SharedIDCount)
+		}
+	}
+
+	// 5. Ambiguous payment on shared ID without selecting person must error, while targeted payment succeeds
+	if _, err := accMgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "Parques-18502",
+		Type:          accounts.MovementPayment,
+		Amount:        3000,
+		PaymentMethod: "QR",
+	}); err == nil {
+		t.Fatalf("expected ambiguity error when paying Parques-18502 without customer disambiguation")
+	}
+
+	paidAna, err := accMgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "Parques-18502",
+		CustomerName:  "Ana Gómez",
+		Type:          accounts.MovementPayment,
+		Amount:        3000,
+		PaymentMethod: "QR",
+		Note:          "Abono vía Nequi QR",
+	})
+	if err != nil || paidAna.CurrentBalance != 3600 {
+		t.Fatalf("expected Ana balance 3600 after 3000 QR payment, got %+v (err=%v)", paidAna, err)
+	}
+
+	// Carlos and Cliente Previo must remain untouched
+	reloadedCarlos, _ := accMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
+	reloadedPrev, _ := accMgr.GetAccountByIDAndName("Parques-18502", "Cliente Previo")
+	if reloadedCarlos.CurrentBalance != 5000 || reloadedPrev.CurrentBalance != 15000 {
+		t.Fatalf("shared accounts corrupted after paying Ana: carlos=%d prev=%d", reloadedCarlos.CurrentBalance, reloadedPrev.CurrentBalance)
+	}
+
+	// Verify 0 SQLite foreign key violations after migration and multi-account writes
+	fkRows, err := accMgr.DB.Query(`PRAGMA foreign_key_check;`)
+	if err != nil {
+		t.Fatalf("PRAGMA foreign_key_check: %v", err)
+	}
+	defer fkRows.Close()
+	if fkRows.Next() {
+		t.Fatalf("unexpected foreign_key_check violation after v1->v2 migration")
 	}
 }

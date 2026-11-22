@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================================" -ForegroundColor Cyan
-Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.0 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
+Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.1 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\AroniumUtility"
@@ -30,6 +30,9 @@ $DestUIBin  = Join-Path $InstallDir "aronium-utility-ui.exe"
 Copy-Item -Path (Join-Path $PSScriptRoot "aronium-util.exe") -Destination $DestCLIBin -Force
 if (Test-Path (Join-Path $PSScriptRoot "aronium-utility-ui.exe")) {
     Copy-Item -Path (Join-Path $PSScriptRoot "aronium-utility-ui.exe") -Destination $DestUIBin -Force
+}
+if (Test-Path (Join-Path $PSScriptRoot "app-icon.ico")) {
+    Copy-Item -Path (Join-Path $PSScriptRoot "app-icon.ico") -Destination (Join-Path $InstallDir "app-icon.ico") -Force
 }
 
 [Environment]::SetEnvironmentVariable("ARONIUM_UTIL_HOME",   $DataDir,    "User")
