@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.4"
+const Version = "1.2.5"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -138,9 +138,9 @@ COMANDOS PRINCIPALES:
 EJEMPLOS RÁPIDOS:
   aronium-util ui
   aronium-util init --pos-db "C:\Users\Caja\AppData\Local\Aronium\Data\pos.db" --register POS-01
-  aronium-util accounts create --id "Parques-18502" --name "Ana Gómez" --payment-method "QR" --limit 2000000
+  aronium-util accounts create --id "Torre-110" --name "Cliente Ejemplo A" --payment-method "QR" --limit 2000000
   aronium-util catalog search --barcode "7701234500011"
-  aronium-util accounts pay --account-id "Parques-18502" --name "Ana Gómez" --amount 500000 --payment-method "QR"
+  aronium-util accounts pay --account-id "Torre-110" --name "Cliente Ejemplo A" --amount 500000 --payment-method "QR"
   aronium-util drive login
   aronium-util sync
 `, Version)
@@ -1498,9 +1498,9 @@ func runAccounts(args []string) error {
 	case "create":
 		fs := flag.NewFlagSet("accounts create", flag.ContinueOnError)
 		accountKey := fs.String("account-key", "", "Clave interna única de la cuenta (opcional)")
-		id := fs.String("id", "", "ID compuesto de la cuenta (Ej. Parques-18502)")
-		idPrefix := fs.String("id-prefix", "", "Primera parte textual del ID (ej. Parques)")
-		idNumber := fs.String("id-number", "", "Segunda parte numérica del ID (ej. 18502)")
+		id := fs.String("id", "", "ID compuesto de la cuenta (Ej. ABC-123)")
+		idPrefix := fs.String("id-prefix", "", "Primera parte textual del ID (ej. ABC)")
+		idNumber := fs.String("id-number", "", "Segunda parte numérica del ID (ej. 123)")
 		name := fs.String("name", "", "Nombre completo del cliente (obligatorio, separa cuentas con el mismo ID)")
 		phone := fs.String("phone", "", "Teléfono de contacto (opcional)")
 		payMethod := fs.String("payment-method", "Efectivo", "Método de pago acordado (Efectivo, QR, Transferencia, Tarjeta, Otro)")
@@ -1672,7 +1672,7 @@ func runAccounts(args []string) error {
 
 	case "by-id":
 		fs := flag.NewFlagSet("accounts by-id", flag.ContinueOnError)
-		sharedID := fs.String("id", "", "ID compartido a consultar (ej. Parques-18502)")
+		sharedID := fs.String("id", "", "ID compartido a consultar (ej. Torre-110)")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {

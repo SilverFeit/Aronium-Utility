@@ -144,7 +144,7 @@ type MovementRequest struct {
 	Items         []MovementItemInput `json:"items,omitempty"`
 }
 
-// SplitCompoundID parses or joins the two-part ID (Text prefix + Numeric part, e.g. Parques-18502).
+// SplitCompoundID parses or joins the two-part ID (Text prefix + Numeric part, e.g. ABC-123).
 func SplitCompoundID(rawID, prefix, number string) (fullID, outPrefix, outNumber string) {
 	p := strings.TrimSpace(prefix)
 	n := strings.TrimSpace(number)
@@ -633,7 +633,7 @@ func (m *Manager) CreateOrUpdateAccountWithItems(req CreateAccountRequest) (*Acc
 	desc := strings.TrimSpace(req.Description)
 
 	if fullID == "" {
-		return nil, fmt.Errorf("el campo ID (Ej. Parques-18502) es obligatorio")
+		return nil, fmt.Errorf("el campo ID (Ej. ABC-123) es obligatorio")
 	}
 	if name == "" {
 		return nil, fmt.Errorf("el campo Nombre del cliente es obligatorio")
@@ -888,7 +888,7 @@ func (m *Manager) GetAccountByIDAndName(accountID, customerName string) (*Accoun
 	return nil, fmt.Errorf("cuenta '%s' no encontrada", accountID)
 }
 
-// ListAccountsByID returns all customer accounts sharing a compound apartment/location ID (e.g. Parques-18502).
+// ListAccountsByID returns all customer accounts sharing a compound apartment/location ID (e.g. Torre-110).
 func (m *Manager) ListAccountsByID(sharedID string) ([]AccountSummary, error) {
 	rep, err := m.ListAccounts("")
 	if err != nil {

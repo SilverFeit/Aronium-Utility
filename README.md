@@ -135,7 +135,7 @@ The unified installer automatically:
 
 ### Option B — Portable `.zip` with `install.bat` / `install.ps1`
 
-1. Download **`Aronium-Utility-1.2.4-windows-x64.zip`** *(or `Aronium-Utility-1.2.4-windows-x86.zip`)*.
+1. Download **`Aronium-Utility-1.2.5-windows-x64.zip`** *(or `Aronium-Utility-1.2.5-windows-x86.zip`)*.
 2. Extract the archive and double-click **`install.bat`** *(or run `.\install.ps1` in PowerShell)*.
 
 ---
@@ -157,13 +157,13 @@ aronium-util sync
 
 # Manage Dedicated Customer Credit Accounts (cuentas.db), Shared Compound IDs (Texto-Numero), Payments & Statements
 aronium-util accounts list
-aronium-util accounts create --id "Parques-18502" --name "Ana Gómez" --payment-method "QR" --limit 300000
-aronium-util accounts create --id "Parques-18502" --name "Carlos Ruiz" --payment-method "QR" --limit 300000
-aronium-util accounts by-id --id "Parques-18502"
-aronium-util accounts charge --account-id "Parques-18502" --name "Ana Gómez" --amount 45000 --note "Mercado semanal"
-aronium-util accounts pay --account-id "Parques-18502" --name "Ana Gómez" --amount 20000 --payment-method "QR"
-aronium-util accounts delete --account-id "Parques-18502" --name "Ana Gómez"   # Only allowed when balance == 0
-aronium-util accounts statement --account-id "Parques-18502" --name "Ana Gómez"
+aronium-util accounts create --id "Torre-110" --name "Cliente Ejemplo A" --payment-method "QR" --limit 300000
+aronium-util accounts create --id "Torre-110" --name "Cliente Ejemplo B" --payment-method "QR" --limit 300000
+aronium-util accounts by-id --id "Torre-110"
+aronium-util accounts charge --account-id "Torre-110" --name "Cliente Ejemplo A" --amount 45000 --note "Cargo semanal"
+aronium-util accounts pay --account-id "Torre-110" --name "Cliente Ejemplo A" --amount 20000 --payment-method "QR"
+aronium-util accounts delete --account-id "Torre-110" --name "Cliente Ejemplo A"   # Only allowed when balance == 0
+aronium-util accounts statement --account-id "Torre-110" --name "Cliente Ejemplo A"
 aronium-util accounts migrate
 
 # Search live pos.db catalog & barcodes from CLI
@@ -206,7 +206,7 @@ aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium
 ```text
 Aronium-Utility/
 ├── go.mod                               # Pure-Go module (modernc.org/sqlite + gopkg.in/yaml.v3 — zero CGO)
-├── VERSION                              # Single source of truth for release version (1.2.4)
+├── VERSION                              # Single source of truth for release version (1.2.5)
 ├── cmd/
 │   ├── aronium-util/                    # Main Go CLI & background startup watcher (`aronium-util.exe`)
 │   ├── aronium-utility-ui/              # Desktop UI executable (`aronium-utility-ui.exe`) consuming Go CLI sidecar

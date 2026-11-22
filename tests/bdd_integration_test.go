@@ -979,9 +979,9 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 		subtotal INTEGER NOT NULL
 	);
 	INSERT INTO cuentas (id, nombre, telefono, metodo_pago, tope_credito, descripcion)
-		VALUES ('Parques-18502', 'Cliente Previo', '', 'QR', 200000, 'Residente Apto 18502');
+		VALUES ('Torre-110', 'Cliente Previo', '', 'QR', 200000, 'Torre A, Apartamento 110');
 	INSERT INTO movimientos (id, cuenta_id, tipo, monto, metodo_pago_usado, nota)
-		VALUES (7, 'Parques-18502', 'CARGO', 15000, 'QR', 'Saldo heredado v1');
+		VALUES (7, 'Torre-110', 'CARGO', 15000, 'QR', 'Saldo heredado v1');
 	INSERT INTO movimiento_items (movimiento_id, aronium_product_id, codigo_barras, nombre_snapshot, precio_unitario_snapshot, cantidad, subtotal)
 		VALUES (7, 1, '7701234500011', 'Arroz v1', 7500, 2, 15000);
 	`
@@ -1009,55 +1009,55 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	defer accMgr.Close()
 
 	// Ensure migrated v1 customer balance survived cleanly
-	prevAcc, err := accMgr.GetAccountByIDAndName("Parques-18502", "Cliente Previo")
+	prevAcc, err := accMgr.GetAccountByIDAndName("Torre-110", "Cliente Previo")
 	if err != nil || prevAcc.CurrentBalance != 15000 {
 		t.Fatalf("migrated account balance mismatch: %+v (err=%v)", prevAcc, err)
 	}
 
-	// 3. Create 2 additional accounts sharing the SAME compound ID Parques-18502 (separated by nombre)
+	// 3. Create 2 additional accounts sharing the SAME compound ID Torre-110 (separated by nombre)
 	// with empty optional phone & description, QR payment method, and quick punctual values
 	anaAcc, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
-		IDPrefix:      "Parques",
-		IDNumber:      "18502",
-		Name:          "Ana Gómez",
+		IDPrefix:      "Torre",
+		IDNumber:      "110",
+		Name:          "Cliente A",
 		Phone:         "", // optional
 		PaymentMethod: "QR",
 		CreditLimit:   300000,
 		Description:   "", // optional
 		Items: []accounts.MovementItemInput{
 			{AroniumProductID: 1, Barcode: "7701234500011", NameSnapshot: "Arroz 1kg", UnitPriceSnapshot: 4500, Quantity: 1},
-			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Tinto y dulces", UnitPriceSnapshot: 2100, Quantity: 1}, // $2.000 + $100 quick value
+			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Valor puntual", UnitPriceSnapshot: 2100, Quantity: 1}, // $2.000 + $100 quick value
 		},
 	})
 	if err != nil {
-		t.Fatalf("create Ana Gómez on shared Parques-18502 failed: %v", err)
+		t.Fatalf("create Cliente A on shared Torre-110 failed: %v", err)
 	}
-	if anaAcc.ID != "Parques-18502" || anaAcc.IDPrefix != "Parques" || anaAcc.IDNumber != "18502" ||
+	if anaAcc.ID != "Torre-110" || anaAcc.IDPrefix != "Torre" || anaAcc.IDNumber != "110" ||
 		anaAcc.PaymentMethod != "QR" || anaAcc.CurrentBalance != 6600 {
-		t.Fatalf("unexpected Ana account state: %+v", anaAcc)
+		t.Fatalf("unexpected Cliente A account state: %+v", anaAcc)
 	}
 
 	carlosAcc, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
-		IDPrefix:      "Parques",
-		IDNumber:      "18502",
-		Name:          "Carlos Ruiz",
+		IDPrefix:      "Torre",
+		IDNumber:      "110",
+		Name:          "Cliente B",
 		PaymentMethod: "QR",
 		CreditLimit:   300000,
 		Items: []accounts.MovementItemInput{
-			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Almuerzo y jugo", UnitPriceSnapshot: 5000, Quantity: 1},
+			{AroniumProductID: 0, Barcode: "PUNTUAL", NameSnapshot: "Consumo varios", UnitPriceSnapshot: 5000, Quantity: 1},
 		},
 	})
 	if err != nil {
-		t.Fatalf("create Carlos Ruiz on shared Parques-18502 failed: %v", err)
+		t.Fatalf("create Cliente B on shared Torre-110 failed: %v", err)
 	}
 	if carlosAcc.CurrentBalance != 5000 {
-		t.Fatalf("unexpected Carlos balance: %+v", carlosAcc)
+		t.Fatalf("unexpected Cliente B balance: %+v", carlosAcc)
 	}
 
-	// 4. Listing by ID Parques-18502 must surface all accounts sharing that apartment ID
-	sharedList, err := accMgr.ListAccountsByID("Parques-18502")
+	// 4. Listing by ID Torre-110 must surface all accounts sharing that apartment ID
+	sharedList, err := accMgr.ListAccountsByID("Torre-110")
 	if err != nil || len(sharedList) != 3 {
-		t.Fatalf("expected 3 accounts sharing Parques-18502, got %d (err=%v)", len(sharedList), err)
+		t.Fatalf("expected 3 accounts sharing Torre-110, got %d (err=%v)", len(sharedList), err)
 	}
 	for _, s := range sharedList {
 		if s.SharedIDCount != 3 {
@@ -1067,31 +1067,31 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 
 	// 5. Ambiguous payment on shared ID without selecting person must error, while targeted payment succeeds
 	if _, err := accMgr.RecordMovement(accounts.MovementRequest{
-		AccountID:     "Parques-18502",
+		AccountID:     "Torre-110",
 		Type:          accounts.MovementPayment,
 		Amount:        3000,
 		PaymentMethod: "QR",
 	}); err == nil {
-		t.Fatalf("expected ambiguity error when paying Parques-18502 without customer disambiguation")
+		t.Fatalf("expected ambiguity error when paying Torre-110 without customer disambiguation")
 	}
 
 	paidAna, err := accMgr.RecordMovement(accounts.MovementRequest{
-		AccountID:     "Parques-18502",
-		CustomerName:  "Ana Gómez",
+		AccountID:     "Torre-110",
+		CustomerName:  "Cliente A",
 		Type:          accounts.MovementPayment,
 		Amount:        3000,
 		PaymentMethod: "QR",
-		Note:          "Abono vía Nequi QR",
+		Note:          "Abono vía QR",
 	})
 	if err != nil || paidAna.CurrentBalance != 3600 {
-		t.Fatalf("expected Ana balance 3600 after 3000 QR payment, got %+v (err=%v)", paidAna, err)
+		t.Fatalf("expected Cliente A balance 3600 after 3000 QR payment, got %+v (err=%v)", paidAna, err)
 	}
 
-	// Carlos and Cliente Previo must remain untouched
-	reloadedCarlos, _ := accMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
-	reloadedPrev, _ := accMgr.GetAccountByIDAndName("Parques-18502", "Cliente Previo")
+	// Cliente B and Cliente Previo must remain untouched
+	reloadedCarlos, _ := accMgr.GetAccountByIDAndName("Torre-110", "Cliente B")
+	reloadedPrev, _ := accMgr.GetAccountByIDAndName("Torre-110", "Cliente Previo")
 	if reloadedCarlos.CurrentBalance != 5000 || reloadedPrev.CurrentBalance != 15000 {
-		t.Fatalf("shared accounts corrupted after paying Ana: carlos=%d prev=%d", reloadedCarlos.CurrentBalance, reloadedPrev.CurrentBalance)
+		t.Fatalf("shared accounts corrupted after paying Cliente A: carlos=%d prev=%d", reloadedCarlos.CurrentBalance, reloadedPrev.CurrentBalance)
 	}
 
 	// Verify 0 SQLite foreign key violations after migration and multi-account writes
@@ -1117,11 +1117,11 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	}
 	defer recoveredMgr.Close()
 
-	recAna, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Ana Gómez")
+	recAna, err := recoveredMgr.GetAccountByIDAndName("Torre-110", "Cliente A")
 	if err != nil || recAna.CurrentBalance != 3600 {
-		t.Fatalf("expected Ana balance 3600 to be preserved/recovered after reinstall, got %+v (err=%v)", recAna, err)
+		t.Fatalf("expected Cliente A balance 3600 to be preserved/recovered after reinstall, got %+v (err=%v)", recAna, err)
 	}
-	recCarlos, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
+	recCarlos, err := recoveredMgr.GetAccountByIDAndName("Torre-110", "Cliente B")
 	if err != nil || recCarlos.CurrentBalance != 5000 {
 		t.Fatalf("expected Carlos balance 5000 to be preserved/recovered after reinstall, got %+v (err=%v)", recCarlos, err)
 	}
@@ -1181,32 +1181,32 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	_ = os.Remove(appRes.InstallerPath)
 
 	// 8. Delete Paid Account strictly enforced: blocked while balance > 0, allowed once settled to $0
-	if _, err := recoveredMgr.DeletePaidAccount("Parques-18502", "Ana Gómez"); err == nil {
-		t.Fatalf("expected DeletePaidAccount to fail while Ana still owes 3600")
+	if _, err := recoveredMgr.DeletePaidAccount("Torre-110", "Cliente A"); err == nil {
+		t.Fatalf("expected DeletePaidAccount to fail while Cliente A still owes 3600")
 	}
 
 	settledAna, err := recoveredMgr.RecordMovement(accounts.MovementRequest{
-		AccountID:     "Parques-18502",
-		CustomerName:  "Ana Gómez",
+		AccountID:     "Torre-110",
+		CustomerName:  "Cliente A",
 		Type:          accounts.MovementPayment,
 		Amount:        3600,
 		PaymentMethod: "QR",
 		Note:          "Liquidación total",
 	})
 	if err != nil || settledAna.CurrentBalance != 0 {
-		t.Fatalf("expected Ana balance 0 after settling, got %+v (err=%v)", settledAna, err)
+		t.Fatalf("expected Cliente A balance 0 after settling, got %+v (err=%v)", settledAna, err)
 	}
 
-	deletedAna, err := recoveredMgr.DeletePaidAccount("Parques-18502", "Ana Gómez")
-	if err != nil || deletedAna == nil || deletedAna.Name != "Ana Gómez" {
+	deletedAna, err := recoveredMgr.DeletePaidAccount("Torre-110", "Cliente A")
+	if err != nil || deletedAna == nil || deletedAna.Name != "Cliente A" {
 		t.Fatalf("DeletePaidAccount failed after zero balance: %+v (err=%v)", deletedAna, err)
 	}
 
-	if _, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Ana Gómez"); err == nil {
-		t.Fatalf("expected deleted account Ana Gómez to be absent from cuentas.db")
+	if _, err := recoveredMgr.GetAccountByIDAndName("Torre-110", "Cliente A"); err == nil {
+		t.Fatalf("expected deleted account Cliente A to be absent from cuentas.db")
 	}
-	carlosStillThere, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
+	carlosStillThere, err := recoveredMgr.GetAccountByIDAndName("Torre-110", "Cliente B")
 	if err != nil || carlosStillThere.CurrentBalance != 5000 {
-		t.Fatalf("expected sibling account Carlos Ruiz to remain intact after deleting Ana: %+v (err=%v)", carlosStillThere, err)
+		t.Fatalf("expected sibling account Cliente B to remain intact after deleting Cliente A: %+v (err=%v)", carlosStillThere, err)
 	}
 }

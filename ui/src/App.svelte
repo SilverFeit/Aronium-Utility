@@ -76,7 +76,7 @@
         : formIdNumber.trim()
   );
 
-  // Quick Punctual Value entry above scanner (Dulces, comida, tinto / sin código)
+  // Quick Punctual Value entry above scanner
   let quickValueDesc = $state('');
   let quickValueAmount = $state<number>(0);
 
@@ -427,7 +427,7 @@
     if (accountActionMode === 'new') {
       if (!cleanPrefix || !cleanNum || !/^\d+$/.test(cleanNum) || !formName.trim()) {
         showToast(
-          'Por favor completa las 2 partes del ID (Texto y Número, ej. Parques-18502) y el Nombre del cliente. Teléfono y descripción son opcionales.',
+          'Por favor completa las 2 partes del ID (Texto y Número, ej. ABC-123) y el Nombre completo. Teléfono y descripción son opcionales.',
           true
         );
         return;
@@ -1061,11 +1061,11 @@
             {:else}
               <div class="form-grid">
                 <div class="field-label" style="grid-column: span 2;">
-                  <span>ID de la Cuenta / Apartamento (Texto - Número) *</span>
+                  <span>ID de la Cuenta / Ubicación (Texto - Número) *</span>
                   <div class="compound-id-box">
                     <input
                       class="compound-id-part"
-                      placeholder="Texto (Ej. Parques)"
+                      placeholder="Texto (Ej. ABC)"
                       value={formIdPrefix}
                       oninput={(e) => handleIdPrefixInput((e.currentTarget as HTMLInputElement).value)}
                     />
@@ -1074,14 +1074,14 @@
                       bind:this={formIdNumberEl}
                       class="compound-id-part"
                       inputmode="numeric"
-                      placeholder="Número (Ej. 18502)"
+                      placeholder="Número (Ej. 123)"
                       value={formIdNumber}
                       oninput={(e) => handleIdNumberInput((e.currentTarget as HTMLInputElement).value)}
                     />
                   </div>
                   <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                     <span class="id-preview-pill">
-                      Vista previa ID: {combinedFormId || 'Texto-Número'}
+                      Vista previa ID: {combinedFormId || 'ABC-123'}
                     </span>
                     {#if accountsSharingNewId.length > 0}
                       <span style="font-size: 11.5px; color: var(--accent-amber); margin-top: 6px;">
@@ -1092,11 +1092,11 @@
                 </div>
                 <label class="field-label">
                   Nombre Completo (Separa cuentas con mismo ID) *
-                  <input class="input" placeholder="Ej. Juan Pérez" bind:value={formName} />
+                  <input class="input" placeholder="Ej. Nombre Apellido" bind:value={formName} />
                 </label>
                 <label class="field-label">
                   Teléfono (Opcional)
-                  <input class="input" placeholder="Opcional · Ej. 3001234567" bind:value={formPhone} />
+                  <input class="input" placeholder="Opcional · Ej. 000-000-0000" bind:value={formPhone} />
                 </label>
                 <label class="field-label">
                   Método de Pago Acordado *
@@ -1116,7 +1116,7 @@
                   Descripción / Referencia (Opcional)
                   <input
                     class="input"
-                    placeholder="Opcional · Ej. Torre 2 Apto 18502"
+                    placeholder="Opcional · Ej. Torre A, Apartamento 110"
                     bind:value={formDescription}
                   />
                 </label>
@@ -1128,7 +1128,7 @@
                 Nota de esta anotación (Opcional)
                 <input
                   class="input"
-                  placeholder="Ej. Retira pedido semanal"
+                  placeholder="Opcional · Ej. Nota o referencia breve"
                   bind:value={formMoveNote}
                 />
               </label>
@@ -1191,17 +1191,17 @@
 
           <!-- Right Card: Quick Punctual Value + Barcode Scanner + Live Aronium Product Search + Cart -->
           <div class="card">
-            <!-- Quick Punctual Value Annotator ABOVE Barcode Scanner (Dulces, comida, tinto / sin código) -->
+            <!-- Quick Punctual Value Annotator ABOVE Barcode Scanner -->
             <div class="quick-value-box">
               <div style="font-size: 13.5px; font-weight: 800; color: #fde68a; margin-bottom: 8px;">
-                Agregar Valor Puntual (Dulces, Tinto, Comida / Sin Código)
+                Agregar Valor Puntual
               </div>
               <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
                 <label class="field-label" style="margin-bottom: 0;">
                   Descripción opcional (referente del artículo)
                   <input
                     class="input"
-                    placeholder="Opcional · Ej. Dulces, tinto, empanada, almuerzo..."
+                    placeholder="Opcional · Ej. Producto o descripción breve"
                     bind:value={quickValueDesc}
                   />
                 </label>
