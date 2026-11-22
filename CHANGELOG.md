@@ -2,6 +2,15 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.3] — 2026-11-22
+
+### Added
+- **Direct In-App GitHub Releases Auto-Updater (`Modo Avanzado` UI & `aronium-util update check|apply`):**
+  - Added `internal/updater` package and CLI subcommands `aronium-util update check` and `aronium-util update apply` querying `https://api.github.com/repos/SilverFeit/Aronium-Utility/releases/latest`.
+  - Added the **"Actualización Directa desde GitHub Releases"** panel inside **Modo Avanzado → `6. Diagnóstico & Actualización`** (plus a quick button in the top bar) to check for newer GitHub releases, view release notes, download the matching Windows unified installer (`aronium-util-setup-x64.exe` / `x86.exe`), verify its SHA-256 hash against `SHA256SUMS.txt`, close active processes, update in-place preserving `cuentas.db` and `aronium-util.yaml`, and relaunch **Aronium Utility UI** automatically.
+
+---
+
 ## [1.2.2] — 2026-11-22
 
 ### Fixed

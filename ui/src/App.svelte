@@ -16,6 +16,8 @@
     InventoryItem,
     KardexEntry,
     SyncResult,
+    UpdateApplyResult,
+    UpdateCheckResult,
   } from './lib/types';
 
   type UIMode = 'basic' | 'advanced';
@@ -41,6 +43,10 @@
   let lastSyncResult = $state<SyncResult | null>(null);
   let lastBackup = $state<BackupManifest | null>(null);
   let serviceStatus = $state<{ status: string; log_path: string } | null>(null);
+  let updateCheck = $state<UpdateCheckResult | null>(null);
+  let updateApplyResult = $state<UpdateApplyResult | null>(null);
+  let checkingUpdate = $state(false);
+  let applyingUpdate = $state(false);
 
   // Database path selector inputs
   let customPosDbPath = $state('');
@@ -697,6 +703,46 @@
       showToast(`Error registrando inicio automático: ${e?.message || e}`, true);
     } finally {
       loading = false;
+    }
+  }
+
+  async function handleCheckForUpdate(silent = false) {
+    checkingUpdate = true;
+    try {
+      const res = await runAroniumCLI<UpdateCheckResult>(['update', 'check', '--json']);
+      updateCheck = res;
+      if (!silent) {
+        if (res.update_available) {
+          showToast(
+            `¡Nueva versión disponible en GitHub (${res.tag_name})! Versión actual: v${res.current_version}.`
+          );
+        } else {
+          showToast(`Ya tienes instalada la versión más reciente (v${res.current_version}).`);
+        }
+      }
+    } catch (e: any) {
+      if (!silent) {
+        showToast(`No se pudo verificar actualizaciones en GitHub: ${e?.message || e}`, true);
+      }
+    } finally {
+      checkingUpdate = false;
+    }
+  }
+
+  async function handleApplyUpdate(force = false) {
+    applyingUpdate = true;
+    try {
+      const args = ['update', 'apply', '--launch-ui=true', '--json'];
+      if (force) {
+        args.push('--force');
+      }
+      const res = await runAroniumCLI<UpdateApplyResult>(args);
+      updateApplyResult = res;
+      showToast(res.message);
+    } catch (e: any) {
+      showToast(`Error aplicando actualización desde GitHub: ${e?.message || e}`, true);
+    } finally {
+      applyingUpdate = false;
     }
   }
 
@@ -1734,9 +1780,12 @@
 
           <button
             class="nav-btn {advTab === 'doctor' ? 'active' : ''}"
-            onclick={() => (advTab = 'doctor')}
+            onclick={() => {
+              advTab = 'doctor';
+              if (!updateCheck) handleCheckForUpdate(true);
+            }}
           >
-            <span>6. Diagnóstico & Servicio</span>
+            <span>6. Diagnóstico & Actualización</span>
             <span>🛡️</span>
           </button>
         </div>
@@ -1772,7 +1821,17 @@
               Doble Base: <code>pos.db</code> (Solo Lectura) + <code>cuentas.db</code> (SQLite WAL)
             </div>
           </div>
-          <div style="display: flex; gap: 10px;">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button
+              class="btn btn-outline"
+              disabled={checkingUpdate || applyingUpdate}
+              onclick={() => {
+                advTab = 'doctor';
+                handleCheckForUpdate(false);
+              }}
+            >
+              {checkingUpdate ? 'Verificando GitHub...' : 'Verificar Actualización GitHub'}
+            </button>
             <button class="btn btn-outline" disabled={loading} onclick={refreshAll}>
               {loading ? 'Actualizando...' : 'Actualizar Datos'}
             </button>
@@ -2013,6 +2072,101 @@
         {/if}
 
         {#if advTab === 'doctor'}
+          <!-- GitHub Releases Direct Auto-Updater Card -->
+          <div class="card" style="border-color: var(--accent-blue); margin-bottom: 16px;">
+            <div class="card-title">
+              <span>Actualización Directa desde GitHub Releases (<code>SilverFeit/Aronium-Utility</code>)</span>
+              {#if updateCheck}
+                <span class={updateCheck.update_available ? 'badge badge-warn' : 'badge badge-ok'}>
+                  {updateCheck.update_available
+                    ? `¡Nueva versión ${updateCheck.tag_name} disponible!`
+                    : `✓ Al día (v${updateCheck.current_version})`}
+                </span>
+              {/if}
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-top: 0; line-height: 1.5;">
+              Consulta la última release oficial publicada en GitHub, descarga el instalador unificado para Windows,
+              verifica su firma/hash SHA-256, cierra los procesos en uso y actualiza el sistema preservando intactas
+              tus cuentas en <code>cuentas.db</code> y tu configuración.
+            </p>
+
+            {#if updateCheck}
+              <div
+                style="padding: 12px 14px; border-radius: 10px; background: var(--bg-primary); border: 1px solid var(--border); margin-bottom: 14px; font-size: 13px;"
+              >
+                <div style="display: flex; gap: 22px; flex-wrap: wrap;">
+                  <span>Versión instalada: <strong>v{updateCheck.current_version}</strong></span>
+                  <span>
+                    Última release en GitHub:
+                    <strong style="color: var(--accent-green);">
+                      {updateCheck.tag_name || `v${updateCheck.latest_version}`}
+                    </strong>
+                  </span>
+                  {#if updateCheck.installer_asset_name}
+                    <span>Paquete: <code>{updateCheck.installer_asset_name}</code></span>
+                  {/if}
+                  {#if updateCheck.published_at}
+                    <span>Publicado: {updateCheck.published_at}</span>
+                  {/if}
+                </div>
+                {#if updateCheck.release_title}
+                  <div style="margin-top: 6px; font-weight: 700; color: #bae6fd;">
+                    {updateCheck.release_title}
+                  </div>
+                {/if}
+                {#if updateCheck.release_notes}
+                  <pre class="stmt-box" style="margin-top: 8px; max-height: 140px;">{updateCheck.release_notes}</pre>
+                {/if}
+              </div>
+            {/if}
+
+            {#if updateApplyResult}
+              <div
+                style="padding: 10px 14px; border-radius: 8px; background: rgba(16, 185, 129, 0.14); border: 1px solid var(--accent-green); color: #a7f3d0; font-size: 13px; margin-bottom: 12px;"
+              >
+                <strong>{updateApplyResult.message}</strong>
+                {#if updateApplyResult.sha256}
+                  <div style="font-size: 11.5px; margin-top: 4px;">
+                    SHA-256: <code>{updateApplyResult.sha256}</code>
+                    {updateApplyResult.verified_sha256 ? ' (✓ Verificado contra SHA256SUMS.txt)' : ''}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <button
+                class="btn"
+                disabled={checkingUpdate || applyingUpdate}
+                onclick={() => handleCheckForUpdate(false)}
+              >
+                {checkingUpdate ? 'Consultando GitHub Releases...' : '1. Verificar Última Release en GitHub'}
+              </button>
+
+              {#if updateCheck?.update_available}
+                <button
+                  class="btn btn-green"
+                  disabled={applyingUpdate || checkingUpdate}
+                  onclick={() => handleApplyUpdate(false)}
+                >
+                  {applyingUpdate
+                    ? 'Descargando y Verificando Instalador...'
+                    : `2. Descargar e Instalar ${updateCheck.tag_name} Ahora`}
+                </button>
+              {:else}
+                <button
+                  class="btn btn-outline"
+                  disabled={applyingUpdate || checkingUpdate}
+                  onclick={() => handleApplyUpdate(true)}
+                >
+                  {applyingUpdate
+                    ? 'Descargando desde GitHub...'
+                    : 'Reinstalar / Reparar desde Última Release de GitHub'}
+                </button>
+              {/if}
+            </div>
+          </div>
+
           <div class="panel-grid">
             <div class="card">
               <h3 class="card-title">Diagnóstico Técnico (`aronium-util doctor`)</h3>

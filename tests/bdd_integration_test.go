@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image/png"
@@ -36,6 +38,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/reports"
 	gosync "github.com/SilverFeit/Aronium-Utility/internal/sync"
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
+	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
 func setupTestEnv(t *testing.T) (*config.Config, string) {
@@ -1122,4 +1125,58 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 	if err != nil || recCarlos.CurrentBalance != 5000 {
 		t.Fatalf("expected Carlos balance 5000 to be preserved/recovered after reinstall, got %+v (err=%v)", recCarlos, err)
 	}
+
+	// 7. Verify Direct GitHub Releases Auto-Updater (update check + update apply with SHA-256 verification)
+	fakeInstallerPayload := []byte("MZ-FAKE-ARONIUM-SETUP-INSTALLER-V1.3.0-PAYLOAD")
+	sumBytes := sha256.Sum256(fakeInstallerPayload)
+	expectedHex := hex.EncodeToString(sumBytes[:])
+
+	var ghSrv *httptest.Server
+	ghSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/SilverFeit/Aronium-Utility/releases/latest":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tag_name":     "v1.3.0",
+				"name":         "Aronium Utility v1.3.0",
+				"body":         "Actualización directa desde GitHub Releases",
+				"html_url":     ghSrv.URL + "/releases/tag/v1.3.0",
+				"published_at": "2026-11-22T06:00:00Z",
+				"assets": []map[string]any{
+					{
+						"name":                 "aronium-util-setup-x64.exe",
+						"browser_download_url": ghSrv.URL + "/download/aronium-util-setup-x64.exe",
+						"size":                 len(fakeInstallerPayload),
+					},
+					{
+						"name":                 "SHA256SUMS.txt",
+						"browser_download_url": ghSrv.URL + "/download/SHA256SUMS.txt",
+						"size":                 128,
+					},
+				},
+			})
+		case "/download/aronium-util-setup-x64.exe":
+			_, _ = w.Write(fakeInstallerPayload)
+		case "/download/SHA256SUMS.txt":
+			fmt.Fprintf(w, "%s  aronium-util-setup-x64.exe\n", expectedHex)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ghSrv.Close()
+
+	upd := updater.NewUpdater("1.2.3")
+	upd.ReleaseAPIURL = ghSrv.URL + "/repos/SilverFeit/Aronium-Utility/releases/latest"
+	upd.DryRunLaunch = true
+
+	chkRes, err := upd.Check(context.Background())
+	if err != nil || !chkRes.UpdateAvailable || chkRes.LatestVersion != "1.3.0" {
+		t.Fatalf("updater.Check failed: %+v (err=%v)", chkRes, err)
+	}
+
+	appRes, err := upd.DownloadAndApply(context.Background(), false, true)
+	if err != nil || !appRes.Downloaded || !appRes.VerifiedSHA256 || appRes.SHA256 != expectedHex {
+		t.Fatalf("updater.DownloadAndApply failed: %+v (err=%v)", appRes, err)
+	}
+	_ = os.Remove(appRes.InstallerPath)
 }

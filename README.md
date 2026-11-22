@@ -135,7 +135,7 @@ The unified installer automatically:
 
 ### Option B — Portable `.zip` with `install.bat` / `install.ps1`
 
-1. Download **`Aronium-Utility-1.2.2-windows-x64.zip`** *(or `Aronium-Utility-1.2.2-windows-x86.zip`)*.
+1. Download **`Aronium-Utility-1.2.3-windows-x64.zip`** *(or `Aronium-Utility-1.2.3-windows-x86.zip`)*.
 2. Extract the archive and double-click **`install.bat`** *(or run `.\install.ps1` in PowerShell)*.
 
 ---
@@ -185,8 +185,10 @@ aronium-util inventory alerts --expire-days 15
 aronium-util inventory kardex
 aronium-util inventory pricelists --list-name Mayorista
 
-# Health Diagnostics, Background Watcher & Windows Auto-Start Service
+# Health Diagnostics, Direct GitHub Release Auto-Update, Background Watcher & Windows Auto-Start
 aronium-util doctor
+aronium-util update check
+aronium-util update apply
 aronium-util watch
 aronium-util service install
 aronium-util service status
@@ -203,7 +205,7 @@ aronium-util backup verify --file "%LOCALAPPDATA%\AroniumUtility\backups\aronium
 ```text
 Aronium-Utility/
 ├── go.mod                               # Pure-Go module (modernc.org/sqlite + gopkg.in/yaml.v3 — zero CGO)
-├── VERSION                              # Single source of truth for release version (1.2.2)
+├── VERSION                              # Single source of truth for release version (1.2.3)
 ├── cmd/
 │   ├── aronium-util/                    # Main Go CLI & background startup watcher (`aronium-util.exe`)
 │   ├── aronium-utility-ui/              # Desktop UI executable (`aronium-utility-ui.exe`) consuming Go CLI sidecar

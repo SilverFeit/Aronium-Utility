@@ -32,9 +32,10 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/service"
 	"github.com/SilverFeit/Aronium-Utility/internal/sync"
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
+	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.2"
+const Version = "1.2.3"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -97,6 +98,8 @@ func run(args []string) error {
 		return runFiscal(subArgs)
 	case "admin":
 		return runAdmin(subArgs)
+	case "update", "upgrade":
+		return runUpdate(subArgs)
 	case "demo-db", "test-fixture":
 		return runDemoDB(subArgs)
 	default:
@@ -129,6 +132,7 @@ COMANDOS PRINCIPALES:
   reports     Cierres diarios, moneda dual, envío por correo/Telegram/Drive y comandas ESC/POS
   fiscal      Conector de Facturación Electrónica Modular UBL 2.1 (emit, list, credit-note)
   admin       Consola administrativa (TUI en terminal, --json para UI y servidor local en localhost:8080)
+  update      Verifica e instala actualizaciones directamente desde GitHub Releases (check, apply)
   demo-db     Genera una base pos.db sintética realista para pruebas inmediatas
 
 EJEMPLOS RÁPIDOS:
@@ -2055,4 +2059,83 @@ func openOSFilePicker(kind string) (string, error) {
 	}
 	return "", fmt.Errorf("selector gráfico nativo disponible en Windows y macOS; ingresa la ruta manualmente")
 }
+
+// 20. update (Check & apply updates directly from GitHub Releases)
+func runUpdate(args []string) error {
+	sub := "check"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = strings.ToLower(args[0])
+		args = args[1:]
+	}
+
+	switch sub {
+	case "check", "status":
+		fs := flag.NewFlagSet("update check", flag.ContinueOnError)
+		apiURL := fs.String("api-url", "", "URL opcional del endpoint de GitHub Releases")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		_, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		upd := updater.NewUpdater(Version)
+		if strings.TrimSpace(*apiURL) != "" {
+			upd.ReleaseAPIURL = strings.TrimSpace(*apiURL)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		res, err := upd.Check(ctx)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		fmt.Printf("Versión actual:  v%s\n", res.CurrentVersion)
+		fmt.Printf("Última release:  v%s (%s)\n", res.LatestVersion, res.ReleaseTitle)
+		if res.UpdateAvailable {
+			fmt.Printf("Estado:          ¡ACTUALIZACIÓN DISPONIBLE! Ejecuta 'aronium-util update apply' para instalarla.\n")
+		} else {
+			fmt.Printf("Estado:          Al día (ya tienes la última versión).\n")
+		}
+		return nil
+
+	case "apply", "install", "now":
+		fs := flag.NewFlagSet("update apply", flag.ContinueOnError)
+		force := fs.Bool("force", false, "Forzar descarga y reinstalación incluso si ya estás en la última versión")
+		launchUI := fs.Bool("launch-ui", true, "Reabrir Aronium Utility UI automáticamente al terminar de actualizar")
+		apiURL := fs.String("api-url", "", "URL opcional del endpoint de GitHub Releases")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		_, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		upd := updater.NewUpdater(Version)
+		if strings.TrimSpace(*apiURL) != "" {
+			upd.ReleaseAPIURL = strings.TrimSpace(*apiURL)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		res, err := upd.DownloadAndApply(ctx, *force, *launchUI)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		fmt.Printf("[✓] %s\n", res.Message)
+		return nil
+
+	default:
+		return fmt.Errorf("subcomando de update desconocido '%s' (usa: check, apply)", sub)
+	}
+}
+
 

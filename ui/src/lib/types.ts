@@ -253,10 +253,37 @@ export interface BackupManifest {
   archive_path: string;
   checksum_path: string;
   sha256: string;
-  encrypted: boolean;
-  compressed: boolean;
   size_bytes: number;
-  store_id: string;
-  cash_register_id: string;
+  encrypted: boolean;
   created_at: string;
+}
+
+export interface UpdateCheckResult {
+  checked_at: string;
+  repository: string;
+  current_version: string;
+  latest_version: string;
+  tag_name: string;
+  update_available: boolean;
+  release_title: string;
+  release_notes: string;
+  release_url: string;
+  published_at: string;
+  installer_asset_name: string;
+  installer_download_url: string;
+  installer_size_bytes: number;
+  sha256_sums_url?: string;
+}
+
+export interface UpdateApplyResult {
+  applied_at: string;
+  current_version: string;
+  target_version: string;
+  update_available: boolean;
+  downloaded: boolean;
+  installer_path: string;
+  sha256: string;
+  verified_sha256: boolean;
+  launched_installer: boolean;
+  message: string;
 }
