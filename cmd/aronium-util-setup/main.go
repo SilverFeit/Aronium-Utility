@@ -25,7 +25,10 @@ var embeddedUIBinary []byte
 //go:embed payload/app-icon.ico
 var embeddedAppIcon []byte
 
-const InstallerVersion = "1.2.8"
+//go:embed payload/AroniumUtility-CodeSigning.cer
+var embeddedCodeSigningCert []byte
+
+const InstallerVersion = "2.0.0"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -165,6 +168,17 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		_ = os.WriteFile(destIconPath, embeddedAppIcon, 0644)
 	} else if icoData, err := os.ReadFile(filepath.Join(exeDir, "app-icon.ico")); err == nil && len(icoData) > 64 {
 		_ = os.WriteFile(destIconPath, icoData, 0644)
+	}
+
+	destCertPath := filepath.Join(installDir, "AroniumUtility-CodeSigning.cer")
+	if len(embeddedCodeSigningCert) > 64 {
+		if _ = os.WriteFile(destCertPath, embeddedCodeSigningCert, 0644); true {
+			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
+		}
+	} else if certData, err := os.ReadFile(filepath.Join(exeDir, "AroniumUtility-CodeSigning.cer")); err == nil && len(certData) > 64 {
+		if _ = os.WriteFile(destCertPath, certData, 0644); true {
+			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
+		}
 	}
 
 	// 3. Detect previous installation or post-uninstall database & preserve user configuration / custom database paths
@@ -391,6 +405,62 @@ func preserveOrRecoverAccountsDB(dataDir, accountsDBPath string) {
 	}
 }
 
+func installCodeSigningCertificateAndExclusions(certPath, installDir, dataDir string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	fmt.Println("[*] Instalando certificado Authenticode SHA-256 en Windows (Root & TrustedPublisher)...")
+	for _, args := range [][]string{
+		{"-user", "-addstore", "-f", "Root", certPath},
+		{"-user", "-addstore", "-f", "TrustedPublisher", certPath},
+		{"-addstore", "-f", "Root", certPath},
+		{"-addstore", "-f", "TrustedPublisher", certPath},
+	} {
+		_ = exec.Command("certutil.exe", args...).Run()
+	}
+	// Best-effort Windows Defender exclusion for install & data dirs
+	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	psExcl := fmt.Sprintf("Add-MpPreference -ExclusionPath '%s','%s' -ErrorAction SilentlyContinue", esc(installDir), esc(dataDir))
+	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psExcl).Run()
+}
+
+func appendDirToWindowsRegistryPath(regKey, installDir string) {
+	out, err := exec.Command("reg.exe", "query", regKey, "/v", "Path").Output()
+	var existing string
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.Contains(strings.ToLower(trimmed), "path") && strings.Contains(trimmed, "REG_") {
+				fields := strings.SplitN(trimmed, "REG_EXPAND_SZ", 2)
+				if len(fields) != 2 {
+					fields = strings.SplitN(trimmed, "REG_SZ", 2)
+				}
+				if len(fields) == 2 {
+					existing = strings.TrimSpace(fields[1])
+				}
+			}
+		}
+	}
+	parts := strings.Split(existing, ";")
+	var clean []string
+	alreadyPresent := false
+	for _, p := range parts {
+		pt := strings.TrimSpace(p)
+		if pt == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimRight(pt, `\`), strings.TrimRight(installDir, `\`)) {
+			alreadyPresent = true
+		}
+		clean = append(clean, pt)
+	}
+	if !alreadyPresent {
+		clean = append(clean, installDir)
+		newVal := strings.Join(clean, ";")
+		_ = exec.Command("reg.exe", "add", regKey, "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", newVal, "/f").Run()
+	}
+}
+
 func configureEnvironmentVariables(installDir, dataDir string, vars map[string]string) error {
 	for k, v := range vars {
 		_ = os.Setenv(k, v)
@@ -411,16 +481,15 @@ func configureEnvironmentVariables(installDir, dataDir string, vars map[string]s
 		_ = exec.Command("reg.exe", "add", `HKCU\Environment`, "/v", k, "/t", "REG_EXPAND_SZ", "/d", v, "/f").Run()
 	}
 
+	// Update User PATH cleanly using native reg.exe first (resilient even if AV blocks child PowerShell)
+	appendDirToWindowsRegistryPath(`HKCU\Environment`, installDir)
+	appendDirToWindowsRegistryPath(`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, installDir)
+
 	psScript := fmt.Sprintf(
 		`$dir = '%s'; $cur = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not $cur) { $cur = '' }; $parts = $cur -split ';' | Where-Object { $_ -ne '' }; if ($parts -notcontains $dir) { $newPath = ($parts + $dir) -join ';'; [Environment]::SetEnvironmentVariable('Path', $newPath, 'User') }`,
 		strings.ReplaceAll(installDir, "'", "''"),
 	)
-	if err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psScript).Run(); err != nil {
-		curPath := os.Getenv("PATH")
-		if !strings.Contains(strings.ToLower(curPath), strings.ToLower(installDir)) {
-			_ = exec.Command("setx.exe", "PATH", curPath+";"+installDir).Run()
-		}
-	}
+	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psScript).Run()
 	return nil
 }
 

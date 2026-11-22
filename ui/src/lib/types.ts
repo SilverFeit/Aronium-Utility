@@ -196,6 +196,7 @@ export interface DoctorReport {
   healthy: boolean;
   pos_db_path: string;
   pos_db_readable: boolean;
+  pos_db_product_count?: number;
   quick_check_result: string;
   aronium_schema_version: string;
   detected_tables: string[];
@@ -204,6 +205,7 @@ export interface DoctorReport {
   state_db_ready: boolean;
   accounts_db_path: string;
   accounts_db_ready: boolean;
+  accounts_count?: number;
   cash_register_id: string;
   register_id_conflict: boolean;
   gdrive_configured: boolean;
@@ -221,11 +223,42 @@ export interface ConfigInfoResponse {
     pos_db_path: string;
     accounts_db_path: string;
     state_db_path: string;
+    timezone?: string;
+    security?: {
+      has_advanced_pin?: boolean;
+    };
+    ui?: {
+      scale_percent?: number;
+      compact_mode?: boolean;
+    };
+    watch?: {
+      auto_sync_drive?: boolean;
+    };
   };
   default_pos_db_path: string;
   default_pos_db_exists: boolean;
   pos_db_exists: boolean;
   accounts_db_exists: boolean;
+  effective_timezone?: string;
+  current_local_time?: string;
+  has_advanced_pin?: boolean;
+  auto_sync_drive?: boolean;
+  ui_scale_percent?: number;
+  ui_compact_mode?: boolean;
+  pos_db_password_set?: boolean;
+}
+
+export interface RepairReport {
+  healthy: boolean;
+  pos_db_product_count: number;
+  accounts_count: number;
+  effective_timezone: string;
+  current_local_time: string;
+  steps: {
+    component: string;
+    ok: boolean;
+    message: string;
+  }[];
 }
 
 export interface DriveStatus {

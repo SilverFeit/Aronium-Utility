@@ -166,6 +166,7 @@ type DoctorReport struct {
 	Healthy               bool              `json:"healthy"`
 	PosDBPath             string            `json:"pos_db_path"`
 	PosDBReadable         bool              `json:"pos_db_readable"`
+	PosDBProductCount     int               `json:"pos_db_product_count"`
 	QuickCheckResult      string            `json:"quick_check_result"`
 	AroniumSchemaVersion  string            `json:"aronium_schema_version"`
 	DetectedTables        []string          `json:"detected_tables"`
@@ -174,6 +175,7 @@ type DoctorReport struct {
 	StateDBReady          bool              `json:"state_db_ready"`
 	AccountsDBPath        string            `json:"accounts_db_path"`
 	AccountsDBReady       bool              `json:"accounts_db_ready"`
+	AccountsCount         int               `json:"accounts_count"`
 	CashRegisterID        string            `json:"cash_register_id"`
 	RegisterIDConflict    bool              `json:"register_id_conflict"`
 	GDriveConfigured      bool              `json:"gdrive_configured"`

@@ -64,6 +64,10 @@ func WithRetry[T any](maxAttempts int, fn func() (T, error)) (T, error) {
 }
 
 func toSQLiteFileURI(path string, readOnly bool) string {
+	return toSQLiteFileURIWithKey(path, readOnly, "")
+}
+
+func toSQLiteFileURIWithKey(path string, readOnly bool, key string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -77,11 +81,14 @@ func toSQLiteFileURI(path string, readOnly bool) string {
 		Path:   slashPath,
 	}
 	q := url.Values{}
+	if strings.TrimSpace(key) != "" {
+		q.Add("_pragma", fmt.Sprintf("key('%s')", strings.ReplaceAll(key, "'", "''")))
+	}
 	if readOnly {
 		q.Set("mode", "ro")
-		q.Set("_pragma", "query_only(1)")
+		q.Add("_pragma", "query_only(1)")
 	} else {
-		q.Set("_pragma", "journal_mode(WAL)")
+		q.Add("_pragma", "journal_mode(WAL)")
 	}
 	q.Add("_pragma", "busy_timeout(5000)")
 	u.RawQuery = q.Encode()
@@ -110,10 +117,15 @@ func OpenPosDBForOnlineBackup(posDBPath string) (*sql.DB, error) {
 
 // OpenPosDBReadOnly opens Aronium Lite's pos.db in strict read-only mode (TODO-009).
 func OpenPosDBReadOnly(posDBPath string) (*sql.DB, error) {
+	return OpenPosDBReadOnlyWithKey(posDBPath, os.Getenv("ARONIUM_POS_DB_PASSWORD"))
+}
+
+// OpenPosDBReadOnlyWithKey opens pos.db in strict read-only mode applying an optional SQLite key PRAGMA.
+func OpenPosDBReadOnlyWithKey(posDBPath, key string) (*sql.DB, error) {
 	if _, err := os.Stat(posDBPath); err != nil {
 		return nil, fmt.Errorf("pos.db not found at %s: %w", posDBPath, err)
 	}
-	dsn := toSQLiteFileURI(posDBPath, true)
+	dsn := toSQLiteFileURIWithKey(posDBPath, true, key)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -121,10 +133,16 @@ func OpenPosDBReadOnly(posDBPath string) (*sql.DB, error) {
 	conn.SetMaxOpenConns(4)
 	conn.SetMaxIdleConns(2)
 
-	// Verify read-only query_only pragma
+	// Verify read-only query_only pragma and readability
 	_, err = WithRetry(5, func() (int, error) {
-		_, e := conn.Exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
-		return 0, e
+		if _, e := conn.Exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;"); e != nil {
+			return 0, e
+		}
+		var cnt int
+		if e := conn.QueryRow("SELECT COUNT(*) FROM sqlite_master;").Scan(&cnt); e != nil {
+			return 0, e
+		}
+		return cnt, nil
 	})
 	if err != nil {
 		_ = conn.Close()
@@ -279,12 +297,51 @@ func migrateStateDB(conn *sql.DB) error {
 
 // AttachPosDBReadOnly attaches pos.db as schema `aronium_pos` in read-only mode onto stateDB (TODO-011).
 func AttachPosDBReadOnly(stateDB *sql.DB, posDBPath string) error {
-	uri := toSQLiteFileURI(posDBPath, true)
+	uri := toSQLiteFileURIWithKey(posDBPath, true, os.Getenv("ARONIUM_POS_DB_PASSWORD"))
 	_, err := WithRetry(5, func() (int, error) {
 		_, e := stateDB.Exec(fmt.Sprintf(`ATTACH DATABASE '%s' AS aronium_pos;`, strings.ReplaceAll(uri, "'", "''")))
 		return 0, e
 	})
 	return err
+}
+
+func tableColumns(conn *sql.DB, tableName string) map[string]bool {
+	cols := make(map[string]bool)
+	rows, err := conn.Query(fmt.Sprintf("PRAGMA table_info(%s);", tableName))
+	if err != nil {
+		return cols
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var cname, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk); err == nil {
+			cols[strings.ToLower(strings.TrimSpace(cname))] = true
+		}
+	}
+	return cols
+}
+
+func colExpr(cols map[string]bool, alias, col, fallback string) string {
+	if cols[strings.ToLower(col)] {
+		if alias != "" {
+			return fmt.Sprintf("COALESCE(%s.%s, %s)", alias, col, fallback)
+		}
+		return fmt.Sprintf("COALESCE(%s, %s)", col, fallback)
+	}
+	return fallback
+}
+
+func colTextExpr(cols map[string]bool, alias, col, fallback string) string {
+	if cols[strings.ToLower(col)] {
+		if alias != "" {
+			return fmt.Sprintf("COALESCE(CAST(%s.%s AS TEXT), %s)", alias, col, fallback)
+		}
+		return fmt.Sprintf("COALESCE(CAST(%s AS TEXT), %s)", col, fallback)
+	}
+	return fallback
 }
 
 // DetachPosDB detaches `aronium_pos` from stateDB.
@@ -370,27 +427,51 @@ func ValidateSchemaCompatibility(posDB *sql.DB) (string, error) {
 	return version, nil
 }
 
-// ListCustomers retrieves all customers from pos.db.
+// ListCustomers retrieves all customers from pos.db tolerating schema differences across Aronium versions.
 func ListCustomers(posDB *sql.DB) ([]Customer, error) {
 	return WithRetry(5, func() ([]Customer, error) {
-		rows, err := posDB.Query(`
+		if !tableExists(posDB, "Customer") {
+			return nil, nil
+		}
+		cols := tableColumns(posDB, "Customer")
+		query := fmt.Sprintf(`
 			SELECT
 				Id,
-				COALESCE(Code, ''),
-				COALESCE(Name, ''),
-				COALESCE(TaxNumber, ''),
-				COALESCE(Address, ''),
-				COALESCE(PostalCode, ''),
-				COALESCE(City, ''),
-				COALESCE(Email, ''),
-				COALESCE(PhoneNumber, ''),
-				COALESCE(IsEnabled, 1),
-				COALESCE(IsCustomer, 1),
-				COALESCE(IsSupplier, 0),
-				COALESCE(DueDatePeriod, 0)
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s
 			FROM Customer
-			ORDER BY Name ASC;
-		`)
+			ORDER BY %s ASC;
+		`,
+			colExpr(cols, "", "Code", "''"),
+			colExpr(cols, "", "Name", "''"),
+			colExpr(cols, "", "TaxNumber", "''"),
+			colExpr(cols, "", "Address", "''"),
+			colExpr(cols, "", "PostalCode", "''"),
+			colExpr(cols, "", "City", "''"),
+			colExpr(cols, "", "Email", "''"),
+			colExpr(cols, "", "PhoneNumber", "''"),
+			colExpr(cols, "", "IsEnabled", "1"),
+			colExpr(cols, "", "IsCustomer", "1"),
+			colExpr(cols, "", "IsSupplier", "0"),
+			colExpr(cols, "", "DueDatePeriod", "0"),
+			func() string {
+				if cols["name"] {
+					return "Name"
+				}
+				return "Id"
+			}(),
+		)
+		rows, err := posDB.Query(query)
 		if err != nil {
 			return nil, err
 		}
@@ -415,25 +496,46 @@ func ListCustomers(posDB *sql.DB) ([]Customer, error) {
 	})
 }
 
-// ListPaymentTypes retrieves all payment types from pos.db.
+// ListPaymentTypes retrieves all payment types from pos.db tolerating schema differences across Aronium versions.
 func ListPaymentTypes(posDB *sql.DB) ([]PaymentType, error) {
 	return WithRetry(5, func() ([]PaymentType, error) {
-		rows, err := posDB.Query(`
+		if !tableExists(posDB, "PaymentType") {
+			return nil, nil
+		}
+		cols := tableColumns(posDB, "PaymentType")
+		orderCol := "Id ASC"
+		if cols["ordinal"] {
+			orderCol = "Ordinal ASC, Id ASC"
+		}
+		query := fmt.Sprintf(`
 			SELECT
 				Id,
-				COALESCE(Name, ''),
-				COALESCE(Code, ''),
-				COALESCE(IsCustomerRequired, 0),
-				COALESCE(IsFiscal, 1),
-				COALESCE(IsChangeAllowed, 1),
-				COALESCE(Ordinal, 0),
-				COALESCE(IsEnabled, 1),
-				COALESCE(IsQuickPayment, 1),
-				COALESCE(OpenCashDrawer, 1),
-				COALESCE(MarkAsPaid, 1)
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s
 			FROM PaymentType
-			ORDER BY Ordinal ASC, Id ASC;
-		`)
+			ORDER BY %s;
+		`,
+			colExpr(cols, "", "Name", "'Pago'"),
+			colExpr(cols, "", "Code", "''"),
+			colExpr(cols, "", "IsCustomerRequired", "0"),
+			colExpr(cols, "", "IsFiscal", "1"),
+			colExpr(cols, "", "IsChangeAllowed", "1"),
+			colExpr(cols, "", "Ordinal", "0"),
+			colExpr(cols, "", "IsEnabled", "1"),
+			colExpr(cols, "", "IsQuickPayment", "1"),
+			colExpr(cols, "", "OpenCashDrawer", "1"),
+			colExpr(cols, "", "MarkAsPaid", "1"),
+			orderCol,
+		)
+		rows, err := posDB.Query(query)
 		if err != nil {
 			return nil, err
 		}
@@ -464,34 +566,69 @@ func ListPaymentTypes(posDB *sql.DB) ([]PaymentType, error) {
 // ListDocuments retrieves documents from pos.db with customer details, items, and payments.
 func ListDocuments(posDB *sql.DB, sinceDocID int64, defaultRegisterID string) ([]Document, error) {
 	return WithRetry(5, func() ([]Document, error) {
-		rows, err := posDB.Query(`
+		if !tableExists(posDB, "Document") {
+			return nil, nil
+		}
+		dCols := tableColumns(posDB, "Document")
+		hasCust := tableExists(posDB, "Customer")
+		cCols := map[string]bool{}
+		custJoin := ""
+		if hasCust && dCols["customerid"] {
+			cCols = tableColumns(posDB, "Customer")
+			custJoin = "LEFT JOIN Customer c ON c.Id = d.CustomerId"
+		}
+
+		query := fmt.Sprintf(`
 			SELECT
 				d.Id,
-				COALESCE(d.Number, CAST(d.Id AS TEXT)),
-				COALESCE(d.UserId, 0),
-				COALESCE(c.Id, 0),
-				COALESCE(c.Name, 'Consumidor Final'),
-				COALESCE(c.TaxNumber, '999999999999'),
-				COALESCE(c.PhoneNumber, ''),
-				COALESCE(c.Email, ''),
-				COALESCE(d.OrderNumber, ''),
-				COALESCE(CAST(d.Date AS TEXT), ''),
-				COALESCE(CAST(d.StockDate AS TEXT), ''),
-				COALESCE(d.Total, 0),
-				COALESCE(d.DocumentTypeId, 0),
-				COALESCE(d.WarehouseId, 0),
-				COALESCE(d.ReferenceDocumentNumber, ''),
-				COALESCE(d.InternalNote, ''),
-				COALESCE(d.Note, ''),
-				COALESCE(CAST(d.DueDate AS TEXT), ''),
-				COALESCE(d.Discount, 0),
-				COALESCE(d.DiscountType, 0),
-				COALESCE(d.PaidStatus, 0)
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s
 			FROM Document d
-			LEFT JOIN Customer c ON c.Id = d.CustomerId
+			%s
 			WHERE d.Id > ?
 			ORDER BY d.Id ASC;
-		`, sinceDocID)
+		`,
+			colTextExpr(dCols, "d", "Number", "CAST(d.Id AS TEXT)"),
+			colExpr(dCols, "d", "UserId", "0"),
+			colExpr(cCols, "c", "Id", "0"),
+			colExpr(cCols, "c", "Name", "'Consumidor Final'"),
+			colExpr(cCols, "c", "TaxNumber", "'999999999999'"),
+			colExpr(cCols, "c", "PhoneNumber", "''"),
+			colExpr(cCols, "c", "Email", "''"),
+			colExpr(dCols, "d", "OrderNumber", "''"),
+			colTextExpr(dCols, "d", "Date", "''"),
+			colTextExpr(dCols, "d", "StockDate", "''"),
+			colExpr(dCols, "d", "Total", "0"),
+			colExpr(dCols, "d", "DocumentTypeId", "0"),
+			colExpr(dCols, "d", "WarehouseId", "0"),
+			colExpr(dCols, "d", "ReferenceDocumentNumber", "''"),
+			colExpr(dCols, "d", "InternalNote", "''"),
+			colExpr(dCols, "d", "Note", "''"),
+			colTextExpr(dCols, "d", "DueDate", "''"),
+			colExpr(dCols, "d", "Discount", "0"),
+			colExpr(dCols, "d", "DiscountType", "0"),
+			colExpr(dCols, "d", "PaidStatus", "0"),
+			custJoin,
+		)
+		rows, err := posDB.Query(query, sinceDocID)
 		if err != nil {
 			return nil, err
 		}
@@ -530,24 +667,64 @@ func ListDocuments(posDB *sql.DB, sinceDocID int64, defaultRegisterID string) ([
 }
 
 func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
-	rows, err := posDB.Query(`
+	if !tableExists(posDB, "DocumentItem") {
+		return nil, nil
+	}
+	diCols := tableColumns(posDB, "DocumentItem")
+	hasProd := tableExists(posDB, "Product")
+	pCols := map[string]bool{}
+	prodJoin := ""
+	if hasProd && diCols["productid"] {
+		pCols = tableColumns(posDB, "Product")
+		prodJoin = "LEFT JOIN Product p ON p.Id = di.ProductId"
+	}
+
+	costExpr := "0"
+	if diCols["productcost"] && pCols["cost"] {
+		costExpr = "COALESCE(di.ProductCost, COALESCE(p.Cost, 0))"
+	} else if diCols["productcost"] {
+		costExpr = "COALESCE(di.ProductCost, 0)"
+	} else if pCols["cost"] {
+		costExpr = "COALESCE(p.Cost, 0)"
+	}
+
+	totalExpr := "COALESCE(di.Quantity, 0) * COALESCE(di.Price, 0)"
+	if diCols["total"] {
+		totalExpr = "COALESCE(di.Total, COALESCE(di.Quantity, 0) * COALESCE(di.Price, 0))"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 			di.Id,
-			di.DocumentId,
-			di.ProductId,
-			COALESCE(p.Code, ''),
-			COALESCE(p.Name, 'Producto #' || CAST(di.ProductId AS TEXT)),
-			COALESCE(p.MeasurementUnit, 'UND'),
-			COALESCE(di.Quantity, 0),
-			COALESCE(di.Price, 0),
-			COALESCE(di.Discount, 0),
-			COALESCE(di.ProductCost, COALESCE(p.Cost, 0)),
-			COALESCE(di.Total, COALESCE(di.Quantity, 0) * COALESCE(di.Price, 0))
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s
 		FROM DocumentItem di
-		LEFT JOIN Product p ON p.Id = di.ProductId
+		%s
 		WHERE di.DocumentId = ?
 		ORDER BY di.Id ASC;
-	`, docID)
+	`,
+		colExpr(diCols, "di", "DocumentId", "0"),
+		colExpr(diCols, "di", "ProductId", "0"),
+		colExpr(pCols, "p", "Code", "''"),
+		colExpr(pCols, "p", "Name", "'Producto #' || CAST(COALESCE(di.ProductId, di.Id) AS TEXT)"),
+		colExpr(pCols, "p", "MeasurementUnit", "'UND'"),
+		colExpr(diCols, "di", "Quantity", "0"),
+		colExpr(diCols, "di", "Price", "0"),
+		colExpr(diCols, "di", "Discount", "0"),
+		costExpr,
+		totalExpr,
+		prodJoin,
+	)
+
+	rows, err := posDB.Query(query, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -568,21 +745,44 @@ func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
 }
 
 func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
-	rows, err := posDB.Query(`
+	if !tableExists(posDB, "Payment") {
+		return nil, nil
+	}
+	pmCols := tableColumns(posDB, "Payment")
+	hasPT := tableExists(posDB, "PaymentType")
+	ptCols := map[string]bool{}
+	ptJoin := ""
+	if hasPT && pmCols["paymenttypeid"] {
+		ptCols = tableColumns(posDB, "PaymentType")
+		ptJoin = "LEFT JOIN PaymentType pt ON pt.Id = pm.PaymentTypeId"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 			pm.Id,
-			pm.DocumentId,
-			pm.PaymentTypeId,
-			COALESCE(pt.Name, 'Pago'),
-			COALESCE(pt.MarkAsPaid, 1),
-			COALESCE(pm.Amount, 0),
-			COALESCE(CAST(pm.Date AS TEXT), ''),
-			COALESCE(pm.UserId, 0)
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s,
+			%s
 		FROM Payment pm
-		LEFT JOIN PaymentType pt ON pt.Id = pm.PaymentTypeId
+		%s
 		WHERE pm.DocumentId = ?
 		ORDER BY pm.Id ASC;
-	`, docID)
+	`,
+		colExpr(pmCols, "pm", "DocumentId", "0"),
+		colExpr(pmCols, "pm", "PaymentTypeId", "0"),
+		colExpr(ptCols, "pt", "Name", "'Pago'"),
+		colExpr(ptCols, "pt", "MarkAsPaid", "1"),
+		colExpr(pmCols, "pm", "Amount", "0"),
+		colTextExpr(pmCols, "pm", "Date", "''"),
+		colExpr(pmCols, "pm", "UserId", "0"),
+		ptJoin,
+	)
+
+	rows, err := posDB.Query(query, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -603,42 +803,101 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 	return out, nil
 }
 
-// ListProductsWithStock returns the complete product catalog joined with ProductGroup, all Barcodes, and Stock (TODO-022, TODO-103).
+// ListProductsWithStock returns the complete product catalog joined dynamically across all Aronium Lite schema variants (TODO-022, TODO-103).
 func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 	return WithRetry(5, func() ([]Product, error) {
+		if !tableExists(posDB, "Product") {
+			return nil, fmt.Errorf("tabla Product no encontrada en pos.db")
+		}
+		pCols := tableColumns(posDB, "Product")
+
+		hasProductGroup := tableExists(posDB, "ProductGroup") && pCols["productgroupid"]
+		pgNameExpr := "'General'"
+		pgJoin := ""
+		if hasProductGroup {
+			pgCols := tableColumns(posDB, "ProductGroup")
+			if pgCols["name"] {
+				pgNameExpr = "COALESCE(pg.Name, 'General')"
+				pgJoin = "LEFT JOIN ProductGroup pg ON pg.Id = p.ProductGroupId"
+			}
+		}
+
+		hasStock := tableExists(posDB, "Stock")
+		stockSelect := "0"
+		stockJoin := ""
+		if hasStock {
+			stCols := tableColumns(posDB, "Stock")
+			if stCols["productid"] && stCols["quantity"] {
+				stockSelect = "COALESCE(st.TotalQty, 0)"
+				stockJoin = "LEFT JOIN (SELECT ProductId, SUM(Quantity) AS TotalQty FROM Stock GROUP BY ProductId) st ON st.ProductId = p.Id"
+			}
+		}
+
 		hasBarcode := tableExists(posDB, "Barcode")
-		barcodeSelect := "''"
-		allBarcodesSelect := "''"
+		barcodeSelect := colExpr(pCols, "p", "Barcode", "''")
+		allBarcodesSelect := barcodeSelect
 		barcodeJoin := ""
 		if hasBarcode {
-			barcodeSelect = "COALESCE(bc.FirstBarcode, '')"
-			allBarcodesSelect = "COALESCE(bc.AllBarcodes, '')"
-			barcodeJoin = "LEFT JOIN (SELECT ProductId, MIN(Value) AS FirstBarcode, GROUP_CONCAT(Value, '|') AS AllBarcodes FROM Barcode GROUP BY ProductId) bc ON bc.ProductId = p.Id"
+			bcCols := tableColumns(posDB, "Barcode")
+			if bcCols["productid"] && bcCols["value"] {
+				if pCols["barcode"] {
+					barcodeSelect = "COALESCE(NULLIF(bc.FirstBarcode, ''), COALESCE(p.Barcode, ''))"
+					allBarcodesSelect = "COALESCE(bc.AllBarcodes, COALESCE(p.Barcode, ''))"
+				} else {
+					barcodeSelect = "COALESCE(bc.FirstBarcode, '')"
+					allBarcodesSelect = "COALESCE(bc.AllBarcodes, '')"
+				}
+				barcodeJoin = "LEFT JOIN (SELECT ProductId, MIN(Value) AS FirstBarcode, GROUP_CONCAT(Value, '|') AS AllBarcodes FROM Barcode GROUP BY ProductId) bc ON bc.ProductId = p.Id"
+			}
+		}
+
+		orderExpr := "p.Id ASC"
+		if pCols["name"] {
+			orderExpr = "p.Name ASC"
 		}
 
 		query := fmt.Sprintf(`
 			SELECT
 				p.Id,
-				COALESCE(p.ProductGroupId, 0),
-				COALESCE(pg.Name, 'General'),
-				COALESCE(p.Name, ''),
-				COALESCE(p.Code, ''),
 				%s,
 				%s,
-				COALESCE(p.PLU, 0),
-				COALESCE(p.MeasurementUnit, 'UND'),
-				COALESCE(p.Price, 0),
-				COALESCE(p.Cost, 0),
-				COALESCE(p.Markup, 0),
-				COALESCE(p.IsService, 0),
-				COALESCE(p.IsEnabled, 1),
-				COALESCE(st.TotalQty, 0)
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s,
+				%s
 			FROM Product p
-			LEFT JOIN ProductGroup pg ON pg.Id = p.ProductGroupId
-			LEFT JOIN (SELECT ProductId, SUM(Quantity) AS TotalQty FROM Stock GROUP BY ProductId) st ON st.ProductId = p.Id
 			%s
-			ORDER BY p.Name ASC;
-		`, barcodeSelect, allBarcodesSelect, barcodeJoin)
+			%s
+			%s
+			ORDER BY %s;
+		`,
+			colExpr(pCols, "p", "ProductGroupId", "0"),
+			pgNameExpr,
+			colExpr(pCols, "p", "Name", "''"),
+			colExpr(pCols, "p", "Code", "''"),
+			barcodeSelect,
+			allBarcodesSelect,
+			colExpr(pCols, "p", "PLU", "0"),
+			colExpr(pCols, "p", "MeasurementUnit", "'UND'"),
+			colExpr(pCols, "p", "Price", "0"),
+			colExpr(pCols, "p", "Cost", "0"),
+			colExpr(pCols, "p", "Markup", "0"),
+			colExpr(pCols, "p", "IsService", "0"),
+			colExpr(pCols, "p", "IsEnabled", "1"),
+			stockSelect,
+			pgJoin,
+			stockJoin,
+			barcodeJoin,
+			orderExpr,
+		)
 
 		rows, err := posDB.Query(query)
 		if err != nil {
@@ -661,9 +920,16 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 			}
 			p.IsService = isService != 0
 			p.IsEnabled = isEnabled != 0
+			seenBC := make(map[string]bool)
+			if p.Barcode != "" {
+				seenBC[strings.ToLower(p.Barcode)] = true
+				p.Barcodes = append(p.Barcodes, p.Barcode)
+			}
 			if allBarcodes != "" {
 				for _, b := range strings.Split(allBarcodes, "|") {
-					if trimmed := strings.TrimSpace(b); trimmed != "" {
+					trimmed := strings.TrimSpace(b)
+					if trimmed != "" && !seenBC[strings.ToLower(trimmed)] {
+						seenBC[strings.ToLower(trimmed)] = true
 						p.Barcodes = append(p.Barcodes, trimmed)
 					}
 				}
@@ -1053,6 +1319,12 @@ func RunDoctor(ctx context.Context, posDBPath, stateDBPath, registerID, tokenVau
 		if err != nil || len(missing) > 0 {
 			rep.Healthy = false
 			rep.Warnings = append(rep.Warnings, fmt.Sprintf("Missing core Aronium tables: %v", missing))
+		}
+		if prods, pErr := ListProductsWithStock(posConn); pErr != nil {
+			rep.Healthy = false
+			rep.Warnings = append(rep.Warnings, fmt.Sprintf("Error leyendo catálogo de productos desde pos.db: %v", pErr))
+		} else {
+			rep.PosDBProductCount = len(prods)
 		}
 	}
 

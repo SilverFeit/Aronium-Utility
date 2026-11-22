@@ -2,6 +2,26 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [2.0.0] — 2026-11-22
+
+### Added & Fixed
+- **Schema-Adaptive `pos.db` Reader (Fixes Missing `p.Markup` / Optional Columns on Real Aronium Lite PCs):**
+  - `internal/db/db.go` (`tableColumns` + `colExpr`) now introspects columns via `PRAGMA table_info(...)` before building queries for `Product`, `ProductGroup`, `Barcode`, `Stock`, `Customer`, `Document`, `DocumentItem`, `Payment`, and `PaymentType`. Databases without `Product.Markup`, `Product.PLU`, `Product.Cost`, or `DocumentItem.ProductCost` now load 100% of products and HID barcode scans without SQL errors.
+  - Added optional `PosDBPassword` (`ARONIUM_POS_DB_PASSWORD`) support and real `PosDBProductCount` / `AccountsCount` telemetry inside `RunDoctor`.
+- **Instant 100% Local Annotation + Optional Live Drive Sync Check:**
+  - `AutoSyncDrive` now defaults to `false` so creating accounts (including uppercase IDs/names) and annotating products saves locally in `cuentas.db` instantaneously without freezing buttons or hitting network timeouts. Live sync can be toggled on/off anytime with a single checkbox, or triggered on cash-drawer close.
+- **Integral Repair Tool (`aronium-util repair`) & Reset Accounts Table (`accounts reset`):**
+  - Added `🛠️ Reparar y Verificar Todo` health check across CLI/PATH, direct `pos.db` product loading, `cuentas.db` migrations/backups, `state.db`, and Google Drive.
+  - Added **`Borrar Tabla Cuentas y Volver a Crear`** (`ResetAndRecreateAccountsDB`) with automatic timestamped pre-reset backup.
+- **5-Digit Numeric PIN Security, Configurable Timezone & 4:3 720p Adaptive Layout:**
+  - Added 5-digit PIN configuration/verification protecting **Modo Avanzado**, account deletion, and table reset (`config set-pin|clear-pin|verify-pin`).
+  - Added configurable timezone selector (`Hora del Sistema` or manual `America/Bogota`, `UTC-5`, etc.) with live second-precision clock preview.
+  - Added 4:3 / 720p visual scaling control (`75%..125%`, default `90%` + Compact 4:3 layout) from **Modo Avanzado**.
+- **Elevated Admin Installer & Trusted Authenticode Setup (`cmd/aronium-util-setup`, `Scripts/gen_winres.go`):**
+  - `aronium-util-setup-*.exe` now embeds `<requestedExecutionLevel level="requireAdministrator"/>` and bundles/installs `AroniumUtility-CodeSigning.cer` into Windows `Root` and `TrustedPublisher` stores while writing User + System `PATH` directly via `reg.exe`.
+
+---
+
 ## [1.2.8] — 2026-11-22
 
 ### Fixed

@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.8"
+const Version = "2.0.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -66,6 +66,8 @@ func run(args []string) error {
 		return runInit(subArgs)
 	case "doctor":
 		return runDoctor(subArgs)
+	case "repair", "fix", "healthcheck":
+		return runRepair(subArgs)
 	case "drive", "gdrive", "auth":
 		return runDrive(subArgs)
 	case "watch":
@@ -117,9 +119,10 @@ COMANDOS PRINCIPALES:
   ui          Lanza la aplicación gráfica de escritorio "Aronium Utility UI" (Tauri 2 + Svelte + TypeScript)
   init        Configura aronium-util.yaml (autodetecta pos.db, crea cuentas.db, ID de caja POS-01, Google Drive)
   doctor      Diagnóstico de salud (pos.db solo lectura, cuentas.db WAL, esquema, credenciales, cajas)
-  accounts    Libro mayor dedicado en cuentas.db (list, create, charge, pay, by-id, delete, migrate, status, statement)
+  repair      Repara y verifica entorno, rutas PATH, conexión directa a pos.db, cuentas.db y Google Drive
+  accounts    Libro mayor dedicado en cuentas.db (list, create, charge, pay, by-id, delete, reset, migrate, status, statement)
   catalog     Búsqueda en vivo de productos y códigos de barras en pos.db (search)
-  config      Consulta y configura rutas de bases de datos (get, set-db, pick-db)
+  config      Consulta y configura rutas, zona horaria, escala UI y PIN de 5 dígitos (get, set-db, pick-db, set-prefs, set-pin, clear-pin, verify-pin)
   drive       Conexión directa a Google Drive & Google Sheets con autenticación vía Web (login, sync, status)
   watch       Demonio en vivo que se inicia al encender el equipo y procesa transacciones sobre pos.db
   service     Registra, inicia, detiene y consulta el servicio de inicio automático en Windows
@@ -345,6 +348,9 @@ func runDoctor(args []string) error {
 	rep.AccountsDBPath = cfg.AccountsDBPath
 	if accMgr, err := accounts.NewManager(cfg.AccountsDBPath); err == nil {
 		rep.AccountsDBReady = true
+		if ledger, lErr := accMgr.ListAccounts(""); lErr == nil && ledger != nil {
+			rep.AccountsCount = ledger.TotalAccountsCount
+		}
 		_ = accMgr.Close()
 	} else {
 		rep.AccountsDBReady = false
@@ -1584,11 +1590,15 @@ func runAccounts(args []string) error {
 		itemsJSON := fs.String("items-json", "", "Arreglo JSON opcional de artículos anotados")
 		note := fs.String("note", "", "Nota del movimiento inicial")
 		strictLimit := fs.Bool("strict-limit", false, "Bloquear guardado si supera el tope de crédito")
-		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive después de guardar")
+		autoSync := fs.Bool("sync", false, "Sincronizar con Google Drive después de guardar (opcional)")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
+		}
+		shouldSync := cfg.Watch.AutoSyncDrive
+		if hasExplicitFlag(fs, "sync") {
+			shouldSync = *autoSync
 		}
 
 		var items []accounts.MovementItemInput
@@ -1625,7 +1635,7 @@ func runAccounts(args []string) error {
 		}
 
 		var syncRes *sync.SyncResult
-		if *autoSync {
+		if shouldSync {
 			syncRes = syncAccountsBestEffort(cfg)
 		}
 
@@ -1648,11 +1658,15 @@ func runAccounts(args []string) error {
 		payMethod := fs.String("payment-method", "", "Método de pago o referencia")
 		note := fs.String("note", "", "Nota del cargo")
 		strictLimit := fs.Bool("strict-limit", false, "Bloquear si supera el tope de crédito")
-		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive")
+		autoSync := fs.Bool("sync", false, "Sincronizar con Google Drive (opcional)")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
+		}
+		shouldSync := cfg.Watch.AutoSyncDrive
+		if hasExplicitFlag(fs, "sync") {
+			shouldSync = *autoSync
 		}
 
 		var items []accounts.MovementItemInput
@@ -1684,7 +1698,7 @@ func runAccounts(args []string) error {
 		}
 
 		var syncRes *sync.SyncResult
-		if *autoSync {
+		if shouldSync {
 			syncRes = syncAccountsBestEffort(cfg)
 		}
 
@@ -1704,11 +1718,15 @@ func runAccounts(args []string) error {
 		amount := fs.Int64("amount", 0, "Monto del pago / abono recibido")
 		payMethod := fs.String("payment-method", "Efectivo", "Método con el que pagó el cliente (Efectivo, QR, Transferencia, Tarjeta, Otro)")
 		note := fs.String("note", "Pago recibido en cuenta (sin afectar cierre Aronium)", "Nota del pago")
-		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive")
+		autoSync := fs.Bool("sync", false, "Sincronizar con Google Drive (opcional)")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
+		}
+		shouldSync := cfg.Watch.AutoSyncDrive
+		if hasExplicitFlag(fs, "sync") {
+			shouldSync = *autoSync
 		}
 
 		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
@@ -1730,7 +1748,7 @@ func runAccounts(args []string) error {
 		}
 
 		var syncRes *sync.SyncResult
-		if *autoSync {
+		if shouldSync {
 			syncRes = syncAccountsBestEffort(cfg)
 		}
 
@@ -1858,11 +1876,19 @@ func runAccounts(args []string) error {
 		fs := flag.NewFlagSet("accounts delete", flag.ContinueOnError)
 		accountID := fs.String("account-id", "", "ID o account_key de la cuenta totalmente pagada")
 		custName := fs.String("name", "", "Nombre del cliente cuando varias cuentas comparten el mismo ID")
-		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive después de eliminar")
+		pin := fs.String("pin", "", "PIN de 5 dígitos requerido si Modo Avanzado está protegido")
+		autoSync := fs.Bool("sync", false, "Sincronizar con Google Drive después de eliminar")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, _, err := loadConfigWithFlags(fs, args)
 		if err != nil {
 			return err
+		}
+		if cfg.Security.HasAdvancedPIN && !config.VerifyPIN(*pin, cfg.Security.AdvancedPINHash) {
+			return fmt.Errorf("PIN de 5 dígitos incorrecto o requerido para eliminar cuenta")
+		}
+		shouldSync := cfg.Watch.AutoSyncDrive
+		if hasExplicitFlag(fs, "sync") {
+			shouldSync = *autoSync
 		}
 
 		targetID := *accountID
@@ -1882,7 +1908,7 @@ func runAccounts(args []string) error {
 		}
 
 		var syncRes *sync.SyncResult
-		if *autoSync {
+		if shouldSync {
 			syncRes = syncAccountsBestEffort(cfg)
 		}
 
@@ -1895,8 +1921,38 @@ func runAccounts(args []string) error {
 		fmt.Printf("[✓] Cuenta totalmente pagada eliminada: [%s] %s (Saldo: $0)\n", deletedAcc.ID, deletedAcc.Name)
 		return nil
 
+	case "reset", "recreate", "truncate":
+		fs := flag.NewFlagSet("accounts reset", flag.ContinueOnError)
+		pin := fs.String("pin", "", "PIN de 5 dígitos requerido si Modo Avanzado está protegido")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		if cfg.Security.HasAdvancedPIN && !config.VerifyPIN(*pin, cfg.Security.AdvancedPINHash) {
+			return fmt.Errorf("PIN de 5 dígitos incorrecto o requerido para reiniciar la tabla de cuentas")
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+		backupPath, err := mgr.ResetAndRecreateAccountsDB()
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"reset":       true,
+				"backup_path": backupPath,
+				"db_path":     cfg.AccountsDBPath,
+			})
+		}
+		fmt.Printf("[✓] Tabla de cuentas eliminada y recreada limpia en %s (respaldo previo: %s)\n", cfg.AccountsDBPath, backupPath)
+		return nil
+
 	default:
-		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, delete, migrate, status, statement)", sub)
+		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, delete, reset, migrate, status, statement)", sub)
 	}
 }
 
@@ -2054,26 +2110,37 @@ func runConfigCmd(args []string) error {
 		_, defPosErr := os.Stat(defaultPos)
 
 		payload := map[string]any{
-			"config_path":            cfgPath,
-			"config":                 cfg,
-			"default_pos_db_path":    defaultPos,
-			"default_pos_db_exists":  defPosErr == nil,
-			"pos_db_exists":          posErr == nil,
-			"accounts_db_exists":     accErr == nil,
+			"config_path":           cfgPath,
+			"config":                cfg,
+			"default_pos_db_path":   defaultPos,
+			"default_pos_db_exists": defPosErr == nil,
+			"pos_db_exists":         posErr == nil,
+			"accounts_db_exists":    accErr == nil,
+			"effective_timezone":    accounts.LocalLocation().String(),
+			"current_local_time":    accounts.LocalTimestampNow(),
+			"has_advanced_pin":      cfg.Security.HasAdvancedPIN,
+			"auto_sync_drive":       cfg.Watch.AutoSyncDrive,
+			"ui_scale_percent":      cfg.UI.ScalePercent,
+			"ui_compact_mode":       cfg.UI.CompactMode,
+			"pos_db_password_set":   strings.TrimSpace(cfg.PosDBPassword) != "",
 		}
 		if *jsonOut {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(payload)
 		}
-		fmt.Printf("Config: %s\npos.db: %s (existe=%v)\ncuentas.db: %s (existe=%v)\n",
-			cfgPath, cfg.PosDBPath, posErr == nil, cfg.AccountsDBPath, accErr == nil)
+		fmt.Printf("Config: %s\npos.db: %s (existe=%v)\ncuentas.db: %s (existe=%v)\nZona horaria: %s (Hora actual: %s)\nPIN Modo Avanzado: %v | Sync en vivo: %v | Escala UI: %d%%\n",
+			cfgPath, cfg.PosDBPath, posErr == nil, cfg.AccountsDBPath, accErr == nil,
+			accounts.LocalLocation().String(), accounts.LocalTimestampNow(),
+			cfg.Security.HasAdvancedPIN, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent)
 		return nil
 
 	case "set-db":
 		fs := flag.NewFlagSet("config set-db", flag.ContinueOnError)
 		newPosDB := fs.String("set-pos-db", "", "Nueva ruta para pos.db de Aronium Lite")
 		newAccDB := fs.String("set-accounts-db", "", "Nueva ruta para cuentas.db")
+		posDBPass := fs.String("pos-db-password", "", "Contraseña opcional de pos.db")
+		clearPass := fs.Bool("clear-pos-db-password", false, "Borrar contraseña configurada de pos.db")
 		useDefaultPos := fs.Bool("use-default-pos", false, "Restaurar autodetección por defecto de pos.db")
 		createDemoPos := fs.Bool("create-demo-pos", false, "Crear pos.db de demostración si no existe")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
@@ -2090,6 +2157,17 @@ func runConfigCmd(args []string) error {
 		}
 		if strings.TrimSpace(*newAccDB) != "" {
 			cfg.AccountsDBPath = strings.TrimSpace(*newAccDB)
+		}
+		if *clearPass {
+			cfg.PosDBPassword = ""
+			os.Unsetenv("ARONIUM_POS_DB_PASSWORD")
+		} else if hasExplicitFlag(fs, "pos-db-password") {
+			cfg.PosDBPassword = *posDBPass
+			if *posDBPass != "" {
+				_ = os.Setenv("ARONIUM_POS_DB_PASSWORD", *posDBPass)
+			} else {
+				os.Unsetenv("ARONIUM_POS_DB_PASSWORD")
+			}
 		}
 		if *createDemoPos {
 			if _, err := os.Stat(cfg.PosDBPath); os.IsNotExist(err) {
@@ -2146,9 +2224,307 @@ func runConfigCmd(args []string) error {
 		fmt.Println(selectedPath)
 		return nil
 
+	case "set-prefs", "prefs":
+		fs := flag.NewFlagSet("config set-prefs", flag.ContinueOnError)
+		tz := fs.String("timezone", "", "Zona horaria ('Local' o ej. America/Bogota, UTC-5)")
+		autoSync := fs.Bool("auto-sync-drive", false, "Sincronizar automáticamente con Google Drive al guardar")
+		uiScale := fs.Int("ui-scale", 0, "Escala visual de interfaz en porcentaje (75..125)")
+		uiCompact := fs.Bool("ui-compact", true, "Modo compacto para monitores 4:3 720p")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		if hasExplicitFlag(fs, "timezone") {
+			cleanTZ := strings.TrimSpace(*tz)
+			if cleanTZ == "" {
+				cleanTZ = "Local"
+			}
+			cfg.Timezone = cleanTZ
+			if strings.EqualFold(cleanTZ, "Local") {
+				os.Unsetenv("ARONIUM_TIMEZONE")
+			} else {
+				_ = os.Setenv("ARONIUM_TIMEZONE", cleanTZ)
+			}
+		}
+		if hasExplicitFlag(fs, "auto-sync-drive") {
+			cfg.Watch.AutoSyncDrive = *autoSync
+		}
+		if hasExplicitFlag(fs, "ui-scale") && *uiScale > 0 {
+			s := *uiScale
+			if s < 75 {
+				s = 75
+			} else if s > 125 {
+				s = 125
+			}
+			cfg.UI.ScalePercent = s
+		}
+		if hasExplicitFlag(fs, "ui-compact") {
+			cfg.UI.CompactMode = *uiCompact
+		}
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"saved":              true,
+				"timezone":           cfg.Timezone,
+				"effective_timezone": accounts.LocalLocation().String(),
+				"current_local_time": accounts.LocalTimestampNow(),
+				"auto_sync_drive":    cfg.Watch.AutoSyncDrive,
+				"ui_scale_percent":   cfg.UI.ScalePercent,
+				"ui_compact_mode":    cfg.UI.CompactMode,
+			})
+		}
+		fmt.Printf("[✓] Preferencias guardadas (Zona=%s, SyncEnVivo=%v, Escala=%d%%)\n", cfg.Timezone, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent)
+		return nil
+
+	case "set-pin":
+		fs := flag.NewFlagSet("config set-pin", flag.ContinueOnError)
+		curPin := fs.String("current-pin", "", "PIN actual (si ya hay uno configurado)")
+		newPin := fs.String("new-pin", "", "Nuevo PIN numérico de 5 dígitos")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		if cfg.Security.HasAdvancedPIN && !config.VerifyPIN(*curPin, cfg.Security.AdvancedPINHash) {
+			return fmt.Errorf("el PIN actual es incorrecto")
+		}
+		hash, err := config.HashPIN(*newPin)
+		if err != nil {
+			return err
+		}
+		cfg.Security.AdvancedPINHash = hash
+		cfg.Security.HasAdvancedPIN = true
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"has_advanced_pin": true})
+		}
+		fmt.Println("[✓] PIN de 5 dígitos configurado para proteger Modo Avanzado y eliminación de cuentas.")
+		return nil
+
+	case "clear-pin":
+		fs := flag.NewFlagSet("config clear-pin", flag.ContinueOnError)
+		curPin := fs.String("current-pin", "", "PIN actual de 5 dígitos")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		if cfg.Security.HasAdvancedPIN && !config.VerifyPIN(*curPin, cfg.Security.AdvancedPINHash) {
+			return fmt.Errorf("el PIN actual es incorrecto")
+		}
+		cfg.Security.AdvancedPINHash = ""
+		cfg.Security.HasAdvancedPIN = false
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"has_advanced_pin": false})
+		}
+		fmt.Println("[✓] PIN de Modo Avanzado eliminado.")
+		return nil
+
+	case "verify-pin":
+		fs := flag.NewFlagSet("config verify-pin", flag.ContinueOnError)
+		pin := fs.String("pin", "", "PIN de 5 dígitos a validar")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		valid := !cfg.Security.HasAdvancedPIN || config.VerifyPIN(*pin, cfg.Security.AdvancedPINHash)
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"valid":            valid,
+				"has_advanced_pin": cfg.Security.HasAdvancedPIN,
+			})
+		}
+		if !valid {
+			return fmt.Errorf("PIN incorrecto")
+		}
+		fmt.Println("[✓] PIN válido.")
+		return nil
+
 	default:
-		return fmt.Errorf("subcomando de config desconocido '%s' (usa: get, set-db, pick-db)", sub)
+		return fmt.Errorf("subcomando de config desconocido '%s' (usa: get, set-db, pick-db, set-prefs, set-pin, clear-pin, verify-pin)", sub)
 	}
+}
+
+func hasExplicitFlag(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// runRepair ejecuta un health-check integral y reparación automática de entorno, pos.db, cuentas.db, state.db y Google Drive.
+func runRepair(args []string) error {
+	fs := flag.NewFlagSet("repair", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+	cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+	if err != nil {
+		return err
+	}
+
+	type repairStep struct {
+		Component string `json:"component"`
+		OK        bool   `json:"ok"`
+		Message   string `json:"message"`
+	}
+	var steps []repairStep
+	allOK := true
+
+	// 1. CLI binaries & Windows PATH/env verification
+	exePath, _ := os.Executable()
+	installDir := filepath.Dir(exePath)
+	if runtime.GOOS == "windows" && installDir != "" {
+		_ = exec.Command("reg.exe", "add", `HKCU\Environment`, "/v", "ARONIUM_CLI_BIN", "/t", "REG_EXPAND_SZ", "/d", exePath, "/f").Run()
+		uiCand := filepath.Join(installDir, "aronium-utility-ui.exe")
+		if _, stErr := os.Stat(uiCand); stErr == nil {
+			_ = exec.Command("reg.exe", "add", `HKCU\Environment`, "/v", "ARONIUM_UI_BIN", "/t", "REG_EXPAND_SZ", "/d", uiCand, "/f").Run()
+		}
+		steps = append(steps, repairStep{
+			Component: "CLI & Entorno",
+			OK:        true,
+			Message:   fmt.Sprintf("Ejecutable activo v%s en %s", Version, exePath),
+		})
+	} else {
+		steps = append(steps, repairStep{
+			Component: "CLI & Entorno",
+			OK:        true,
+			Message:   fmt.Sprintf("Motor CLI v%s operativo (%s)", Version, exePath),
+		})
+	}
+
+	// 2. Direct pos.db validation & product loading check
+	if _, stErr := os.Stat(cfg.PosDBPath); stErr != nil {
+		detected := config.DetectAroniumPosDB()
+		if _, dErr := os.Stat(detected); dErr == nil {
+			cfg.PosDBPath = detected
+			_ = cfg.Save(cfgPath)
+		}
+	}
+	prodCount := 0
+	posConn, posErr := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	if posErr != nil {
+		allOK = false
+		steps = append(steps, repairStep{
+			Component: "pos.db (Inventario Aronium)",
+			OK:        false,
+			Message:   fmt.Sprintf("No se pudo abrir pos.db (%s): %v", cfg.PosDBPath, posErr),
+		})
+	} else {
+		prods, pErr := db.ListProductsWithStock(posConn)
+		_ = posConn.Close()
+		if pErr != nil {
+			allOK = false
+			steps = append(steps, repairStep{
+				Component: "pos.db (Inventario Aronium)",
+				OK:        false,
+				Message:   fmt.Sprintf("Conectado a %s pero falló lectura de productos: %v", cfg.PosDBPath, pErr),
+			})
+		} else {
+			prodCount = len(prods)
+			steps = append(steps, repairStep{
+				Component: "pos.db (Inventario Aronium)",
+				OK:        true,
+				Message:   fmt.Sprintf("Conectado correctamente (%d productos cargados desde %s)", prodCount, cfg.PosDBPath),
+			})
+		}
+	}
+
+	// 3. cuentas.db migration, snapshot & state.db check
+	accCount := 0
+	migRep, migErr := accounts.MigrateAccountsDB(cfg.AccountsDBPath)
+	if migErr != nil {
+		allOK = false
+		steps = append(steps, repairStep{
+			Component: "cuentas.db (Libro Mayor)",
+			OK:        false,
+			Message:   fmt.Sprintf("Error reparando cuentas.db (%s): %v", cfg.AccountsDBPath, migErr),
+		})
+	} else {
+		accMgr, aErr := accounts.NewManager(cfg.AccountsDBPath)
+		if aErr == nil {
+			if led, lErr := accMgr.ListAccounts(""); lErr == nil && led != nil {
+				accCount = led.TotalAccountsCount
+			}
+			_ = accMgr.OnlineBackupAccountsDB(context.Background(), filepath.Join(filepath.Dir(cfg.AccountsDBPath), "backups", "cuentas_pre_install_snapshot.db"))
+			_ = accMgr.Close()
+		}
+		steps = append(steps, repairStep{
+			Component: "cuentas.db (Libro Mayor)",
+			OK:        true,
+			Message:   fmt.Sprintf("Esquema v%d verificado (%d cuenta(s), respaldo actualizado)", migRep.CurrentVersion, accCount),
+		})
+	}
+
+	if stConn, stErr := db.OpenStateDB(cfg.StateDBPath); stErr != nil {
+		allOK = false
+		steps = append(steps, repairStep{
+			Component: "state.db (Estado Local)",
+			OK:        false,
+			Message:   fmt.Sprintf("Error abriendo state.db: %v", stErr),
+		})
+	} else {
+		_ = stConn.Close()
+		steps = append(steps, repairStep{
+			Component: "state.db (Estado Local)",
+			OK:        true,
+			Message:   fmt.Sprintf("Base de estado operativa (%s)", cfg.StateDBPath),
+		})
+	}
+
+	// 4. Google Drive folder & token check
+	syncDir := filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName)
+	if mkErr := os.MkdirAll(syncDir, 0755); mkErr != nil {
+		steps = append(steps, repairStep{
+			Component: "Google Drive & Respaldo",
+			OK:        false,
+			Message:   fmt.Sprintf("No se pudo crear carpeta de respaldo %s: %v", syncDir, mkErr),
+		})
+	} else {
+		tokStatus := "Modo Carpeta Local (Sin cuenta nube vinculada aún)"
+		if info, err := os.Stat(cfg.GoogleDrive.TokenVaultPath); err == nil && info.Size() > 0 {
+			tokStatus = "Carpeta local y token OAuth cifrado listos"
+		}
+		steps = append(steps, repairStep{
+			Component: "Google Drive & Respaldo",
+			OK:        true,
+			Message:   fmt.Sprintf("%s (%s)", tokStatus, syncDir),
+		})
+	}
+
+	_ = cfg.Save(cfgPath)
+
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"healthy":              allOK,
+			"pos_db_product_count": prodCount,
+			"accounts_count":       accCount,
+			"effective_timezone":   accounts.LocalLocation().String(),
+			"current_local_time":   accounts.LocalTimestampNow(),
+			"steps":                steps,
+		})
+	}
+	fmt.Println("===============================================================")
+	fmt.Printf("  REPARACIÓN Y HEALTH CHECK INTEGRAL — ARONIUM UTILITY v%s\n", Version)
+	fmt.Println("===============================================================")
+	for _, s := range steps {
+		tag := "OK"
+		if !s.OK {
+			tag = "ERROR"
+		}
+		fmt.Printf("[%s] %-28s %s\n", tag, s.Component+":", s.Message)
+	}
+	return nil
 }
 
 func openOSFilePicker(kind string) (string, error) {

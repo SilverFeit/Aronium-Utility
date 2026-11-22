@@ -1413,3 +1413,124 @@ func TestBDD_LocalTimezoneTimestamps_And_V2UTCToV3Migration(t *testing.T) {
 		t.Fatalf("expected statement header and movement date hour prefix %q to match:\n%s", updated.Movements[0].Date[:13], stmt)
 	}
 }
+
+func TestBDD_V2_SchemaAdaptivePosDB_LocalSyncToggle_PinSecurity_ResetAndRepair(t *testing.T) {
+	tmpDir := t.TempDir()
+	minimalPosPath := filepath.Join(tmpDir, "pos.db")
+	accDBPath := filepath.Join(tmpDir, "cuentas.db")
+	stateDBPath := filepath.Join(tmpDir, "state.db")
+
+	// 1. Construct a real-world Aronium Lite pos.db WITHOUT optional columns (no p.Markup, no p.PLU, no p.Cost, no di.ProductCost)
+	posConn, err := sql.Open("sqlite", minimalPosPath)
+	if err != nil {
+		t.Fatalf("open minimal pos.db: %v", err)
+	}
+	minimalPosDDL := `
+	CREATE TABLE ProductGroup (Id INTEGER PRIMARY KEY, Name TEXT);
+	CREATE TABLE Product (Id INTEGER PRIMARY KEY, ProductGroupId INTEGER, Name TEXT, Code TEXT, Price REAL, IsEnabled INTEGER);
+	CREATE TABLE Barcode (Id INTEGER PRIMARY KEY, ProductId INTEGER, Value TEXT);
+	CREATE TABLE Stock (Id INTEGER PRIMARY KEY, ProductId INTEGER, Quantity REAL);
+	CREATE TABLE Customer (Id INTEGER PRIMARY KEY, Name TEXT);
+	CREATE TABLE PaymentType (Id INTEGER PRIMARY KEY, Name TEXT);
+	CREATE TABLE Document (Id INTEGER PRIMARY KEY, Number TEXT, CustomerId INTEGER, Total REAL, PaidStatus INTEGER, Date TEXT);
+	CREATE TABLE DocumentItem (Id INTEGER PRIMARY KEY, DocumentId INTEGER, ProductId INTEGER, Quantity REAL, Price REAL);
+	CREATE TABLE Payment (Id INTEGER PRIMARY KEY, DocumentId INTEGER, PaymentTypeId INTEGER, Amount REAL);
+
+	INSERT INTO ProductGroup (Id, Name) VALUES (1, 'Snacks');
+	INSERT INTO Product (Id, ProductGroupId, Name, Code, Price, IsEnabled) VALUES (101, 1, 'MANIMOTO LIMON', 'MNL-01', 2000, 1);
+	INSERT INTO Barcode (Id, ProductId, Value) VALUES (1, 101, '7702189058508');
+	INSERT INTO Stock (Id, ProductId, Quantity) VALUES (1, 101, 12);
+	`
+	if _, err := posConn.Exec(minimalPosDDL); err != nil {
+		t.Fatalf("seed minimal pos.db: %v", err)
+	}
+	_ = posConn.Close()
+
+	roPos, err := db.OpenPosDBReadOnly(minimalPosPath)
+	if err != nil {
+		t.Fatalf("OpenPosDBReadOnly minimal pos.db failed: %v", err)
+	}
+	defer roPos.Close()
+
+	prods, err := db.ListProductsWithStock(roPos)
+	if err != nil || len(prods) != 1 || prods[0].Name != "MANIMOTO LIMON" || prods[0].Barcode != "7702189058508" {
+		t.Fatalf("schema-adaptive ListProductsWithStock failed: %+v (err=%v)", prods, err)
+	}
+
+	match, err := db.SearchCatalogForScanner(roPos, minimalPosPath, "", "7702189058508", 20)
+	if err != nil || match.ExactBarcodeMatch == nil || match.ExactBarcodeMatch.Name != "MANIMOTO LIMON" {
+		t.Fatalf("scanner barcode 7702189058508 failed: %+v (err=%v)", match, err)
+	}
+
+	docRep, err := db.RunDoctor(context.Background(), minimalPosPath, stateDBPath, "POS-01", "")
+	if err != nil || !docRep.Healthy || docRep.PosDBProductCount != 1 {
+		t.Fatalf("RunDoctor expected Healthy with PosDBProductCount=1, got %+v (err=%v)", docRep, err)
+	}
+
+	// 2. Verify DefaultConfig sets local instant saves (AutoSyncDrive=false) & 4:3 720p friendly scale (90%)
+	defCfg := config.DefaultConfig()
+	if defCfg.Watch.AutoSyncDrive {
+		t.Fatalf("expected AutoSyncDrive=false by default for instant local annotation")
+	}
+	if defCfg.UI.ScalePercent != 90 || !defCfg.UI.CompactMode {
+		t.Fatalf("expected 4:3/720p UI defaults ScalePercent=90 & CompactMode=true, got %+v", defCfg.UI)
+	}
+
+	// 3. Uppercase account ID & name (e.g., PARQUES-18502 / DANIEL) + clean table reset & recreation
+	mgr, err := accounts.NewManager(accDBPath)
+	if err != nil {
+		t.Fatalf("accounts.NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	created, err := mgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		IDPrefix:      "PARQUES",
+		IDNumber:      "18502",
+		Name:          "DANIEL",
+		PaymentMethod: "Otro",
+		CreditLimit:   500000,
+		Items: []accounts.MovementItemInput{
+			{
+				AroniumProductID:  101,
+				Barcode:           "7702189058508",
+				NameSnapshot:      "MANIMOTO LIMON",
+				UnitPriceSnapshot: 2000,
+				Quantity:          1,
+			},
+		},
+	})
+	if err != nil || created.ID != "PARQUES-18502" || created.Name != "DANIEL" || created.CurrentBalance != 2000 {
+		t.Fatalf("uppercase account creation failed: %+v (err=%v)", created, err)
+	}
+
+	// 4. 5-digit PIN validation & verification
+	if _, err := config.HashPIN("123"); err == nil {
+		t.Fatalf("expected 3-digit PIN to fail validation")
+	}
+	if _, err := config.HashPIN("12ab5"); err == nil {
+		t.Fatalf("expected non-numeric PIN to fail validation")
+	}
+	pinHash, err := config.HashPIN("54321")
+	if err != nil {
+		t.Fatalf("HashPIN valid 5-digit failed: %v", err)
+	}
+	if !config.VerifyPIN("54321", pinHash) || config.VerifyPIN("99999", pinHash) {
+		t.Fatalf("VerifyPIN mismatch")
+	}
+
+	// 5. Drop and recreate cuentas.db tables cleanly with automatic prior backup
+	bakPath, err := mgr.ResetAndRecreateAccountsDB()
+	if err != nil {
+		t.Fatalf("ResetAndRecreateAccountsDB failed: %v", err)
+	}
+	if bakPath == "" {
+		t.Fatalf("expected pre-reset backup path")
+	}
+	if _, stErr := os.Stat(bakPath); stErr != nil {
+		t.Fatalf("expected pre-reset backup file at %s: %v", bakPath, stErr)
+	}
+	afterReset, err := mgr.ListAccounts("")
+	if err != nil || afterReset.TotalAccountsCount != 0 {
+		t.Fatalf("expected 0 accounts after table reset, got %+v (err=%v)", afterReset, err)
+	}
+}

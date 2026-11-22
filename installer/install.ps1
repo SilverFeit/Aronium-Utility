@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================================" -ForegroundColor Cyan
-Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.8 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
+Write-Host "  INSTALADOR DE ARONIUM UTILITY v2.0.0 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\AroniumUtility"
@@ -46,6 +46,12 @@ if (Test-Path (Join-Path $PSScriptRoot "aronium-utility-ui.exe")) {
 }
 if (Test-Path (Join-Path $PSScriptRoot "app-icon.ico")) {
     Copy-Item -Path (Join-Path $PSScriptRoot "app-icon.ico") -Destination (Join-Path $InstallDir "app-icon.ico") -Force
+}
+if (Test-Path (Join-Path $PSScriptRoot "AroniumUtility-CodeSigning.cer")) {
+    $DestCert = Join-Path $InstallDir "AroniumUtility-CodeSigning.cer"
+    Copy-Item -Path (Join-Path $PSScriptRoot "AroniumUtility-CodeSigning.cer") -Destination $DestCert -Force
+    & certutil.exe -user -addstore -f Root $DestCert | Out-Null
+    & certutil.exe -user -addstore -f TrustedPublisher $DestCert | Out-Null
 }
 
 [Environment]::SetEnvironmentVariable("ARONIUM_UTIL_HOME",   $DataDir,    "User")

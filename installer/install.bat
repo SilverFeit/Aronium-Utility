@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 echo ==========================================================================
-echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.8 (CLI + Aronium Utility UI)
+echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v2.0.0 (CLI + Aronium Utility UI)
 echo ==========================================================================
 
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\AroniumUtility"
@@ -43,6 +43,13 @@ if exist "%~dp0aronium-utility-ui.exe" (
 )
 if exist "%~dp0app-icon.ico" (
     copy /Y "%~dp0app-icon.ico" "%INSTALL_DIR%\app-icon.ico" >nul
+)
+if exist "%~dp0AroniumUtility-CodeSigning.cer" (
+    copy /Y "%~dp0AroniumUtility-CodeSigning.cer" "%INSTALL_DIR%\AroniumUtility-CodeSigning.cer" >nul
+    certutil -user -addstore -f Root "%INSTALL_DIR%\AroniumUtility-CodeSigning.cer" >nul 2>&1
+    certutil -user -addstore -f TrustedPublisher "%INSTALL_DIR%\AroniumUtility-CodeSigning.cer" >nul 2>&1
+    certutil -addstore -f Root "%INSTALL_DIR%\AroniumUtility-CodeSigning.cer" >nul 2>&1
+    certutil -addstore -f TrustedPublisher "%INSTALL_DIR%\AroniumUtility-CodeSigning.cer" >nul 2>&1
 )
 
 echo [3/5] Configurando variables de entorno de Windows y PATH del usuario...

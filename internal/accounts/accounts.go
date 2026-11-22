@@ -1181,6 +1181,47 @@ func (m *Manager) DeletePaidAccount(accountID, customerName string) (*AccountSum
 	}, nil
 }
 
+// ResetAndRecreateAccountsDB creates a timestamped backup of cuentas.db, drops the accounts tables,
+// recreates a fresh empty v3 schema, and updates the recovery snapshot.
+func (m *Manager) ResetAndRecreateAccountsDB() (backupPath string, err error) {
+	if m.DBPath != "" {
+		backupDir := filepath.Join(filepath.Dir(m.DBPath), "backups")
+		_ = os.MkdirAll(backupDir, 0755)
+		candidate := filepath.Join(backupDir, fmt.Sprintf("cuentas_before_reset_%s.db", LocalNow().Format("20060102_150405")))
+		if bErr := m.OnlineBackupAccountsDB(context.Background(), candidate); bErr == nil {
+			backupPath = candidate
+		}
+	}
+
+	if _, err := m.DB.Exec(`PRAGMA foreign_keys = OFF;`); err != nil {
+		return backupPath, err
+	}
+	defer func() {
+		_, _ = m.DB.Exec(`PRAGMA foreign_keys = ON;`)
+	}()
+
+	for _, dropStmt := range []string{
+		`DROP TABLE IF EXISTS movimiento_items;`,
+		`DROP TABLE IF EXISTS movimientos;`,
+		`DROP TABLE IF EXISTS cuentas;`,
+	} {
+		if _, err := m.DB.Exec(dropStmt); err != nil {
+			return backupPath, fmt.Errorf("error eliminando tabla en cuentas.db: %w", err)
+		}
+	}
+
+	if err := createFreshV3Schema(m.DB); err != nil {
+		return backupPath, fmt.Errorf("error recreando tabla limpia en cuentas.db: %w", err)
+	}
+
+	if m.DBPath != "" {
+		snapPath := filepath.Join(filepath.Dir(m.DBPath), "backups", "cuentas_pre_install_snapshot.db")
+		_ = m.OnlineBackupAccountsDB(context.Background(), snapPath)
+	}
+
+	return backupPath, nil
+}
+
 // ListAccounts returns the full immutable ledger report across all accounts in cuentas.db.
 func (m *Manager) ListAccounts(search string) (*AccountsLedgerReport, error) {
 	rows, err := db.WithRetry(5, func() (*sql.Rows, error) {

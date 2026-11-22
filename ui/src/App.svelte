@@ -15,6 +15,7 @@
     DriveStatus,
     InventoryItem,
     KardexEntry,
+    RepairReport,
     SyncResult,
     UpdateApplyResult,
     UpdateCheckResult,
@@ -54,9 +55,42 @@
   let confirmDeleteAccount = $state<CustomerAccount | null>(null);
   let deletingAccount = $state(false);
 
-  // Database path selector inputs
+  // Database path selector inputs & v2.0.0 settings state
   let customPosDbPath = $state('');
+  let customPosDbPassword = $state('');
+  let clearPosDbPassword = $state(false);
   let customAccountsDbPath = $state('');
+
+  // Optional live Drive sync toggle (off by default -> instant local writes)
+  let autoSyncLive = $state(false);
+
+  // 4:3 / 720p adaptive UI scaling & compact mode
+  let uiScalePercent = $state(90);
+  let uiCompactMode = $state(true);
+
+  // Configurable Timezone (Local PC clock vs manual)
+  let timezoneInput = $state('Local');
+  let customTimezoneValue = $state('UTC-5');
+  let effectiveTimezone = $state('');
+  let currentLocalTime = $state('');
+
+  // 5-digit numeric PIN protection for Modo Avanzado, Delete & Reset
+  let hasAdvancedPin = $state(false);
+  let advancedUnlocked = $state(false);
+  let sessionPin = $state('');
+  let pinModalVisible = $state(false);
+  let pendingPinAction = $state<'enter_advanced' | 'delete_account' | 'reset_accounts_table' | null>(null);
+  let pinPromptInput = $state('');
+  let pinPromptError = $state('');
+  let curPinInput = $state('');
+  let newPinInput = $state('');
+  let confirmNewPinInput = $state('');
+
+  // System Repair & Accounts Table Reset
+  let repairing = $state(false);
+  let lastRepairReport = $state<RepairReport | null>(null);
+  let showResetTableModal = $state(false);
+  let resettingAccountsTable = $state(false);
 
   // Create Account / Annotate Items Form (Modo Básico)
   let accountActionMode = $state<'new' | 'existing'>('new');
@@ -169,6 +203,13 @@
   );
 
   function setUIMode(mode: UIMode) {
+    if (mode === 'advanced' && hasAdvancedPin && !advancedUnlocked) {
+      pendingPinAction = 'enter_advanced';
+      pinPromptInput = '';
+      pinPromptError = '';
+      pinModalVisible = true;
+      return;
+    }
     uiMode = mode;
     try {
       localStorage.setItem('aronium_ui_mode', mode);
@@ -190,7 +231,7 @@
         runAroniumCLI<DoctorReport>(['doctor', '--json']),
         runAroniumCLI<AccountsLedgerReport>(['accounts', 'list', '--json']),
         runAroniumCLI<DriveStatus>(['drive', 'status', '--json']),
-        runAroniumCLI<{ status: string; log_path: string }>(['service', 'status', '--json']),
+        runAroniumCLI<{ status: string; log_path: string; autostart?: { enabled: boolean; preference: string; shortcut_path: string } }>(['service', 'status', '--json']),
       ]);
 
       configInfo = cfgRes;
@@ -199,26 +240,49 @@
       driveStatus = drvRes;
       serviceStatus = srvRes;
 
+      autoSyncLive = Boolean(cfgRes.auto_sync_drive ?? cfgRes.config?.watch?.auto_sync_drive ?? false);
+      uiScalePercent = cfgRes.ui_scale_percent ?? cfgRes.config?.ui?.scale_percent ?? 90;
+      uiCompactMode = cfgRes.ui_compact_mode ?? cfgRes.config?.ui?.compact_mode ?? true;
+      effectiveTimezone = cfgRes.effective_timezone || '';
+      currentLocalTime = cfgRes.current_local_time || '';
+      hasAdvancedPin = Boolean(cfgRes.has_advanced_pin);
+      if (!hasAdvancedPin) {
+        advancedUnlocked = true;
+      } else if (!advancedUnlocked && uiMode === 'advanced') {
+        uiMode = 'basic';
+      }
+
+      const rawTz = cfgRes.config?.timezone || 'Local';
+      const presetTzs = ['Local', 'America/Bogota', 'America/Lima', 'America/Mexico_City', 'America/Santiago', 'America/Buenos_Aires', 'UTC-5'];
+      if (presetTzs.includes(rawTz)) {
+        timezoneInput = rawTz;
+      } else {
+        timezoneInput = 'custom';
+        customTimezoneValue = rawTz;
+      }
+
       if (!customPosDbPath) customPosDbPath = cfgRes.config.pos_db_path;
       if (!customAccountsDbPath) customAccountsDbPath = cfgRes.config.accounts_db_path;
 
       if (docRes.pos_db_readable) {
-        const [snap, daily] = await Promise.all([
-          runAroniumCLI<DashboardSnapshot>(['admin', '--json']),
-          runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']),
-        ]);
-        snapshot = snap;
-        dailyReport = daily;
-
-        // Preload initial catalog matches so products appear immediately
-        await searchCatalog('');
+        await searchCatalog(scannerQuery);
+        try {
+          snapshot = await runAroniumCLI<DashboardSnapshot>(['admin', '--json']);
+        } catch {
+          snapshot = null;
+        }
+        try {
+          dailyReport = await runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']);
+        } catch {
+          dailyReport = null;
+        }
       } else {
         snapshot = null;
         dailyReport = null;
         catalogMatches = [];
       }
     } catch (e: any) {
-      showToast(`No se pudo comunicar con el motor aronium-util: ${e?.message || e}`, true);
+      showToast(`Error comunicando con aronium-util: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
@@ -479,10 +543,13 @@
         if (cartItems.length > 0) {
           args.push('--items-json', JSON.stringify(cartItems));
         }
+        args.push(autoSyncLive ? '--sync=true' : '--sync=false');
         args.push('--json');
         await runAroniumCLI(args);
         showToast(
-          `¡Cuenta [${fullId}] "${formName.trim()}" guardada en cuentas.db${cartItems.length > 0 ? ` con ${cartItems.length} concepto(s)` : ''} y sincronizada con Google Drive!`
+          autoSyncLive
+            ? `¡Cuenta [${fullId}] "${formName.trim()}" guardada${cartItems.length > 0 ? ` con ${cartItems.length} concepto(s)` : ''} y sincronizada con Drive!`
+            : `¡Cuenta [${fullId}] "${formName.trim()}" guardada en local${cartItems.length > 0 ? ` con ${cartItems.length} concepto(s)` : ''}!`
         );
       } else {
         if (cartItems.length === 0) {
@@ -503,11 +570,14 @@
           formPaymentMethod,
           '--note',
           formMoveNote.trim() || `Anotación de ${cartItems.length} concepto(s)`,
+          autoSyncLive ? '--sync=true' : '--sync=false',
           '--json',
         ];
         await runAroniumCLI(args);
         showToast(
-          `¡Conceptos anotados a la cuenta [${selectedExistingAccount?.id}] de ${selectedExistingAccount?.nombre} y sincronizados con Google Drive!`
+          autoSyncLive
+            ? `¡Conceptos anotados a [${selectedExistingAccount?.id}] ${selectedExistingAccount?.nombre} y sincronizados con Drive!`
+            : `¡Conceptos anotados al instante en [${selectedExistingAccount?.id}] ${selectedExistingAccount?.nombre}!`
         );
       }
 
@@ -553,6 +623,7 @@
         payMethod,
         '--note',
         payNote.trim() || 'Abono / pago en cuenta de cliente',
+        autoSyncLive ? '--sync=true' : '--sync=false',
         '--json',
       ]);
       const paidCustomer = activePayAccount.nombre;
@@ -561,7 +632,9 @@
       payAmount = 0;
       await refreshAll();
       showToast(
-        `¡Pago registrado para [${paidId}] ${paidCustomer} en cuentas.db y sincronizado con Google Drive (el cierre diario de Aronium no fue alterado)!`
+        autoSyncLive
+          ? `¡Pago registrado para [${paidId}] ${paidCustomer} en cuentas.db y sincronizado con Drive!`
+          : `¡Pago registrado en local para [${paidId}] ${paidCustomer} (el cierre de Aronium no fue alterado)!`
       );
     } catch (e: any) {
       showToast(`Error registrando pago: ${e?.message || e}`, true);
@@ -625,6 +698,11 @@
       if (customAccountsDbPath.trim()) {
         args.push('--set-accounts-db', customAccountsDbPath.trim());
       }
+      if (clearPosDbPassword) {
+        args.push('--clear-pos-db-password');
+      } else if (customPosDbPassword.trim()) {
+        args.push('--pos-db-password', customPosDbPassword.trim());
+      }
       if (createDemoPos) {
         args.push('--create-demo-pos');
       }
@@ -633,13 +711,17 @@
       const res = await runAroniumCLI<{ config: any; doctor: DoctorReport }>(args);
       customPosDbPath = res.config.pos_db_path;
       customAccountsDbPath = res.config.accounts_db_path;
+      clearPosDbPassword = false;
+      customPosDbPassword = '';
       showDbModal = false;
       await refreshAll();
       if (res.doctor?.pos_db_readable) {
-        showToast('¡Bases de datos conectadas correctamente!');
+        showToast(
+          `¡Bases conectadas! Se cargaron ${res.doctor.pos_db_product_count ?? 0} producto(s) desde pos.db.`
+        );
       } else {
         showToast(
-          'Se guardó la ruta, pero aún no encontramos el archivo de Aronium (pos.db) en esa ubicación.',
+          'Se guardó la ruta, pero aún no encontramos o no se pudo leer pos.db en esa ubicación.',
           true
         );
       }
@@ -778,7 +860,205 @@
     }
   }
 
+  async function handleSavePrefs(overrides?: {
+    autoSync?: boolean;
+    scale?: number;
+    compact?: boolean;
+    tz?: string;
+  }) {
+    loading = true;
+    try {
+      const nextSync = overrides?.autoSync ?? autoSyncLive;
+      const nextScale = overrides?.scale ?? uiScalePercent;
+      const nextCompact = overrides?.compact ?? uiCompactMode;
+      const resolvedTZ =
+        overrides?.tz ?? (timezoneInput === 'custom' ? customTimezoneValue.trim() || 'Local' : timezoneInput);
+
+      const res = await runAroniumCLI<{
+        effective_timezone: string;
+        current_local_time: string;
+        auto_sync_drive: boolean;
+        ui_scale_percent: number;
+        ui_compact_mode: boolean;
+      }>([
+        'config',
+        'set-prefs',
+        '--timezone',
+        resolvedTZ,
+        nextSync ? '--auto-sync-drive=true' : '--auto-sync-drive=false',
+        '--ui-scale',
+        String(nextScale),
+        nextCompact ? '--ui-compact=true' : '--ui-compact=false',
+        '--json',
+      ]);
+
+      autoSyncLive = res.auto_sync_drive;
+      uiScalePercent = res.ui_scale_percent;
+      uiCompactMode = res.ui_compact_mode;
+      effectiveTimezone = res.effective_timezone;
+      currentLocalTime = res.current_local_time;
+      showToast(
+        `Preferencias guardadas · Hora local: ${res.current_local_time} (${res.effective_timezone}) · Escala: ${res.ui_scale_percent}%`
+      );
+    } catch (e: any) {
+      showToast(`Error guardando preferencias: ${e?.message || e}`, true);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handleVerifyPinModal() {
+    if (!/^\d{5}$/.test(pinPromptInput.trim())) {
+      pinPromptError = 'Ingresa un PIN numérico de exactamente 5 dígitos.';
+      return;
+    }
+    try {
+      const res = await runAroniumCLI<{ valid: boolean }>([
+        'config',
+        'verify-pin',
+        '--pin',
+        pinPromptInput.trim(),
+        '--json',
+      ]);
+      if (!res.valid) {
+        pinPromptError = 'PIN incorrecto. Verifica los 5 dígitos.';
+        return;
+      }
+      sessionPin = pinPromptInput.trim();
+      advancedUnlocked = true;
+      const action = pendingPinAction;
+      pinModalVisible = false;
+      pendingPinAction = null;
+      pinPromptInput = '';
+      pinPromptError = '';
+
+      if (action === 'enter_advanced') {
+        uiMode = 'advanced';
+        try {
+          localStorage.setItem('aronium_ui_mode', 'advanced');
+        } catch {
+          // ignore
+        }
+      } else if (action === 'delete_account' && confirmDeleteAccount) {
+        await handleDeletePaidAccount(confirmDeleteAccount);
+      } else if (action === 'reset_accounts_table') {
+        showResetTableModal = true;
+      }
+    } catch (e: any) {
+      pinPromptError = e?.message || 'Error validando PIN';
+    }
+  }
+
+  async function handleConfigurePin() {
+    if (!/^\d{5}$/.test(newPinInput.trim())) {
+      showToast('El nuevo PIN debe tener exactamente 5 dígitos numéricos (ej. 12345).', true);
+      return;
+    }
+    if (newPinInput.trim() !== confirmNewPinInput.trim()) {
+      showToast('La confirmación del PIN de 5 dígitos no coincide.', true);
+      return;
+    }
+    loading = true;
+    try {
+      const args = ['config', 'set-pin', '--new-pin', newPinInput.trim()];
+      if (hasAdvancedPin) {
+        args.push('--current-pin', curPinInput.trim() || sessionPin);
+      }
+      args.push('--json');
+      await runAroniumCLI(args);
+      hasAdvancedPin = true;
+      sessionPin = newPinInput.trim();
+      advancedUnlocked = true;
+      curPinInput = '';
+      newPinInput = '';
+      confirmNewPinInput = '';
+      await refreshAll();
+      showToast('PIN numérico de 5 dígitos guardado. El Modo Avanzado y la eliminación quedan protegidos.');
+    } catch (e: any) {
+      showToast(`No se pudo guardar el PIN: ${e?.message || e}`, true);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handleClearAdvancedPin() {
+    loading = true;
+    try {
+      await runAroniumCLI([
+        'config',
+        'clear-pin',
+        '--current-pin',
+        curPinInput.trim() || sessionPin,
+        '--json',
+      ]);
+      hasAdvancedPin = false;
+      sessionPin = '';
+      curPinInput = '';
+      await refreshAll();
+      showToast('PIN de protección eliminado.');
+    } catch (e: any) {
+      showToast(`No se pudo quitar el PIN: ${e?.message || e}`, true);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handleRunRepair() {
+    repairing = true;
+    try {
+      const res = await runAroniumCLI<RepairReport>(['repair', '--json']);
+      lastRepairReport = res;
+      await refreshAll();
+      showToast(
+        res.healthy
+          ? `✓ Reparación y Health Check OK: ${res.pos_db_product_count} productos en pos.db, ${res.accounts_count} cuentas listas.`
+          : 'Health Check completado con advertencias. Revisa el detalle técnico abajo.',
+        !res.healthy
+      );
+    } catch (e: any) {
+      showToast(`Error ejecutando reparación integral: ${e?.message || e}`, true);
+    } finally {
+      repairing = false;
+    }
+  }
+
+  async function handleResetAccountsTable() {
+    if (hasAdvancedPin && !advancedUnlocked) {
+      pendingPinAction = 'reset_accounts_table';
+      pinPromptInput = '';
+      pinPromptError = '';
+      pinModalVisible = true;
+      return;
+    }
+    resettingAccountsTable = true;
+    try {
+      const args = ['accounts', 'reset'];
+      if (hasAdvancedPin) {
+        args.push('--pin', sessionPin || curPinInput.trim());
+      }
+      args.push('--json');
+      const res = await runAroniumCLI<{ reset: boolean; backup_path: string }>(args);
+      showResetTableModal = false;
+      await refreshAll();
+      showToast(
+        `Tabla cuentas.db borrada y recreada limpia. Respaldo previo guardado en: ${res.backup_path || 'backups/'}`
+      );
+    } catch (e: any) {
+      showToast(`Error reiniciando tabla de cuentas: ${e?.message || e}`, true);
+    } finally {
+      resettingAccountsTable = false;
+    }
+  }
+
   async function handleDeletePaidAccount(acc: CustomerAccount) {
+    if (hasAdvancedPin && !advancedUnlocked) {
+      confirmDeleteAccount = acc;
+      pendingPinAction = 'delete_account';
+      pinPromptInput = '';
+      pinPromptError = '';
+      pinModalVisible = true;
+      return;
+    }
     if (acc.saldo_actual !== 0) {
       showToast(
         `No se puede eliminar la cuenta "${acc.nombre}" porque aún tiene saldo pendiente ($${acc.saldo_actual.toLocaleString()}).`,
@@ -789,15 +1069,20 @@
     }
     deletingAccount = true;
     try {
-      await runAroniumCLI([
+      const args = [
         'accounts',
         'delete',
         '--account-id',
         accKeyOf(acc),
         '--name',
         acc.nombre,
-        '--json',
-      ]);
+        autoSyncLive ? '--sync=true' : '--sync=false',
+      ];
+      if (hasAdvancedPin && sessionPin) {
+        args.push('--pin', sessionPin);
+      }
+      args.push('--json');
+      await runAroniumCLI(args);
       confirmDeleteAccount = null;
       await refreshAll();
       showToast(`Cuenta pagada [${acc.id}] ${acc.nombre} eliminada definitivamente de cuentas.db.`);
@@ -864,7 +1149,82 @@
   });
 </script>
 
-<div class="app-shell">
+<div class="app-shell {uiCompactMode ? 'compact-43' : ''}" style="--ui-zoom: {uiScalePercent / 100};">
+  <!-- 5-DIGIT PIN SECURITY MODAL -->
+  {#if pinModalVisible}
+    <div class="modal-backdrop">
+      <div class="modal-card">
+        <div class="card-title" style="margin-bottom: 10px;">
+          <span>🔒 Autorización con PIN de 5 Dígitos</span>
+          <button
+            class="btn btn-outline"
+            style="padding: 4px 10px;"
+            onclick={() => {
+              pinModalVisible = false;
+              pendingPinAction = null;
+              confirmDeleteAccount = null;
+            }}
+          >
+            Cancelar
+          </button>
+        </div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-top: 0;">
+          Ingresa el PIN numérico de 5 dígitos para acceder al Modo Avanzado o autorizar eliminaciones/reinicio.
+        </p>
+        <input
+          class="input"
+          type="password"
+          inputmode="numeric"
+          maxlength="5"
+          placeholder="••••• (5 dígitos)"
+          bind:value={pinPromptInput}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') handleVerifyPinModal();
+          }}
+        />
+        {#if pinPromptError}
+          <div style="color: var(--accent-red); font-size: 12.5px; margin-top: 8px; font-weight: 700;">
+            {pinPromptError}
+          </div>
+        {/if}
+        <button class="btn btn-green" style="width: 100%; margin-top: 14px;" onclick={handleVerifyPinModal}>
+          Desbloquear y Continuar
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- CONFIRM RESET / DROP & RECREATE ACCOUNTS TABLE MODAL -->
+  {#if showResetTableModal}
+    <div class="modal-backdrop">
+      <div class="modal-card" style="border-color: var(--accent-red);">
+        <div class="card-title" style="color: var(--accent-red);">
+          <span>⚠️ Borrar y Volver a Crear Tabla de Cuentas</span>
+        </div>
+        <p style="font-size: 13px; color: #fecaca; line-height: 1.5; margin-top: 0;">
+          Esta acción guardará una copia de respaldo automática en <code>backups/</code>, eliminará por completo
+          las tablas de <code>cuentas.db</code> y las volverá a crear vacías (esquema v3 en hora local).
+        </p>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button
+            class="btn btn-red"
+            disabled={resettingAccountsTable}
+            onclick={handleResetAccountsTable}
+          >
+            {resettingAccountsTable ? 'Recreando tabla limpia...' : 'Sí, Borrar y Recrear cuentas.db'}
+          </button>
+          <button
+            class="btn btn-outline"
+            disabled={resettingAccountsTable}
+            onclick={() => (showResetTableModal = false)}
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- GLOBAL TOP HEADER WITH BASIC / ADVANCED SWITCH & DB STATUS -->
   <header class="mode-header">
     <div class="mode-brand">
@@ -895,13 +1255,30 @@
 
     <div class="db-status-pills">
       <span class={doctor?.pos_db_readable ? 'badge badge-ok' : 'badge badge-danger'}>
-        {doctor?.pos_db_readable ? '✓ Productos Aronium OK' : '⚠ Falta Base de Productos'}
+        {doctor?.pos_db_readable
+          ? `✓ Productos Aronium OK (${doctor?.pos_db_product_count ?? snapshot?.inventory_summary?.total_products ?? 0})`
+          : '⚠ Falta Base de Productos'}
       </span>
       <span class={doctor?.accounts_db_ready ? 'badge badge-ok' : 'badge badge-warn'}>
-        {doctor?.accounts_db_ready ? '✓ Base Cuentas Lista' : 'Base Cuentas Pendiente'}
+        {doctor?.accounts_db_ready
+          ? `✓ Base Cuentas (${doctor?.accounts_count ?? accountsReport?.total_cuentas ?? 0})`
+          : 'Base Cuentas Pendiente'}
       </span>
+      {#if hasAdvancedPin && uiMode === 'advanced'}
+        <button
+          class="btn btn-outline"
+          style="padding: 6px 10px; font-size: 12px;"
+          onclick={() => {
+            advancedUnlocked = false;
+            sessionPin = '';
+            setUIMode('basic');
+          }}
+        >
+          🔒 Bloquear Avanzado
+        </button>
+      {/if}
       <button class="btn btn-outline" style="padding: 6px 12px;" onclick={() => (showDbModal = !showDbModal)}>
-        Seleccionar Base de Datos
+        Bases de Datos
       </button>
     </div>
   </header>
@@ -954,6 +1331,20 @@
                 <button class="btn btn-outline" onclick={() => handlePickDatabase('pos')}>Buscar...</button>
               </div>
             </label>
+            <label class="field-label" style="margin-top: 10px;">
+              Contraseña de Base de Datos Aronium (Opcional — dejar vacía si no usa cifrado SQLite)
+              <input
+                class="input"
+                type="password"
+                bind:value={customPosDbPassword}
+                placeholder={configInfo?.pos_db_password_set ? '•••••••• (ya configurada)' : 'Opcional (en Aronium Lite estándar va vacío)'}
+              />
+            </label>
+            {#if configInfo?.pos_db_password_set}
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                <input type="checkbox" bind:checked={clearPosDbPassword} /> Quitar contraseña configurada
+              </label>
+            {/if}
           </div>
           <div>
             <label class="field-label">
@@ -963,17 +1354,40 @@
                 <button class="btn btn-outline" onclick={() => handlePickDatabase('accounts')}>Buscar...</button>
               </div>
             </label>
+            <div style="margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg-primary); border: 1px solid var(--border); font-size: 12.5px;">
+              <strong>Productos leídos de Aronium:</strong> {doctor?.pos_db_product_count ?? 0} producto(s)<br />
+              <strong>Cuentas activas/registradas:</strong> {doctor?.accounts_count ?? accountsReport?.total_cuentas ?? 0}
+            </div>
           </div>
         </div>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
           <button class="btn btn-green" disabled={loading} onclick={() => handleSaveDatabasePaths(false, false)}>
             Guardar y Conectar Bases de Datos
           </button>
+          <button class="btn btn-outline" disabled={loading || repairing} onclick={handleRunRepair}>
+            {repairing ? 'Reparando...' : '🛠️ Reparar y Verificar Conexión'}
+          </button>
           <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(true, false)}>
-            Usar Ruta por Defecto de Aronium
+            Ruta por Defecto
           </button>
           <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(false, true)}>
-            Crear Base de Productos de Prueba
+            Crear BD Prueba
+          </button>
+          <button
+            class="btn btn-red"
+            disabled={loading || resettingAccountsTable}
+            onclick={() => {
+              if (hasAdvancedPin && !advancedUnlocked) {
+                pendingPinAction = 'reset_accounts_table';
+                pinPromptInput = '';
+                pinPromptError = '';
+                pinModalVisible = true;
+              } else {
+                showResetTableModal = true;
+              }
+            }}
+          >
+            🗑️ Borrar Tabla Cuentas y Volver a Crear
           </button>
         </div>
       </div>
@@ -1205,17 +1619,37 @@
               {/if}
             </div>
 
+            <label
+              style="display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--text-muted); cursor: pointer;"
+            >
+              <input
+                type="checkbox"
+                checked={autoSyncLive}
+                disabled={loading}
+                onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
+              />
+              <span>
+                Sincronizar en vivo con Google Drive al guardar (Desmarcado = Guardar solo en local al instante)
+              </span>
+            </label>
+
             <button
               class="btn btn-green"
-              style="width: 100%; margin-top: 16px; padding: 14px; font-size: 15px;"
+              style="width: 100%; margin-top: 12px; padding: 13px; font-size: 14.5px;"
               disabled={loading}
               onclick={handleSaveAccountAndItems}
             >
               {loading
-                ? 'Guardando y Sincronizando...'
+                ? autoSyncLive
+                  ? 'Guardando y Sincronizando...'
+                  : 'Guardando en Local...'
                 : accountActionMode === 'new'
-                  ? 'Guardar Cuenta y Artículos (Sincronizar con Drive)'
-                  : 'Anotar Artículos a la Cuenta (Sincronizar con Drive)'}
+                  ? autoSyncLive
+                    ? 'Guardar Cuenta y Sincronizar con Drive'
+                    : 'Guardar Cuenta y Artículos (Solo Local)'
+                  : autoSyncLive
+                    ? 'Anotar Artículos y Sincronizar con Drive'
+                    : 'Anotar Artículos en Cuenta (Solo Local)'}
             </button>
           </div>
 
@@ -1765,6 +2199,22 @@
                 Haz clic en <strong>Conectar con Google (1 Clic)</strong> para vincular tu cuenta de Google en un solo paso (sin configuraciones complejas).
               {/if}
             </p>
+            <label
+              style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 10px 12px; border-radius: 8px; background: var(--bg-primary); border: 1px solid var(--border); font-size: 13px; cursor: pointer;"
+            >
+              <input
+                type="checkbox"
+                checked={autoSyncLive}
+                disabled={loading}
+                onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
+              />
+              <span>
+                <strong>Sincronizar automáticamente en vivo</strong> después de cada anotación o pago
+                <span style="display: block; font-size: 11.5px; color: var(--text-muted);">
+                  Recomendado desmarcado para atención rápida sin esperas; luego sincronizas al cierre de caja con el botón verde.
+                </span>
+              </span>
+            </label>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
               <button class="btn" disabled={loading} onclick={() => handleDriveWebLogin(true)}>
                 {driveStatus?.connected ? 'Cambiar Cuenta de Google (1 Clic)' : 'Conectar con Google (1 Clic)'}
@@ -2016,10 +2466,16 @@
           <div class="card">
             <div class="card-title">
               <span>Libro Mayor de Cuentas (<code>{accountsReport?.accounts_db_path}</code>)</span>
-              <button class="btn btn-green" onclick={() => { setUIMode('basic'); basicTab = 'create'; }}>
-                Abrir Creador + Escáner
-              </button>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-green" onclick={() => { setUIMode('basic'); basicTab = 'create'; }}>
+                  Abrir Creador + Escáner
+                </button>
+                <button class="btn btn-red" onclick={() => (showResetTableModal = true)}>
+                  🗑️ Borrar y Recrear Tabla Cuentas
+                </button>
+              </div>
             </div>
+            <div class="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -2065,6 +2521,7 @@
                 {/each}
               </tbody>
             </table>
+            </div>
           </div>
         {/if}
 
@@ -2163,6 +2620,17 @@
               <p style="font-size: 13px; color: var(--text-muted);">
                 Exporta 4 pestañas (<code>Cuentas</code>, <code>Movimientos</code>, <code>Detalle_Articulos</code>, <code>Inventario_Neto</code>) y respaldo binario en caliente <code>cuentas_backup.db</code>.
               </p>
+              <label
+                style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; cursor: pointer;"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoSyncLive}
+                  disabled={loading}
+                  onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
+                />
+                <span>Sincronizar automáticamente en vivo tras cada movimiento (Opcional)</span>
+              </label>
               <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="btn" onclick={() => handleDriveWebLogin(true)}>Conectar en 1 Clic</button>
                 <button class="btn btn-outline" onclick={() => handleDriveWebLogin(false)}>Configurar Credenciales / Portal</button>
@@ -2185,6 +2653,127 @@
         {/if}
 
         {#if advTab === 'doctor'}
+          <!-- System Repair & Integral Health Check (BD, Products, Drive, CLI) -->
+          <div class="card" style="border-color: var(--accent-green); margin-bottom: 16px;">
+            <div class="card-title">
+              <span>🛠️ Reparación Integral y Health Check (BD, Inventario, Drive, CLI)</span>
+              <button class="btn btn-green" disabled={repairing || loading} onclick={handleRunRepair}>
+                {repairing ? 'Reparando y Verificando...' : 'Reparar y Verificar Todo Ahora'}
+              </button>
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-top: 0;">
+              Valida y repara en un clic las variables de entorno / PATH, detecta y prueba la carga de productos desde <code>pos.db</code>, verifica la migración y respaldos de <code>cuentas.db</code> y revisa Google Drive.
+            </p>
+            {#if lastRepairReport}
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr><th>Componente</th><th>Estado</th><th>Resultado</th></tr>
+                  </thead>
+                  <tbody>
+                    {#each lastRepairReport.steps as step}
+                      <tr>
+                        <td><strong>{step.component}</strong></td>
+                        <td><span class={step.ok ? 'badge badge-ok' : 'badge badge-danger'}>{step.ok ? 'OK' : 'ATENCIÓN'}</span></td>
+                        <td>{step.message}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </div>
+
+          <!-- Display Scale (4:3 720p) & Configurable Timezone + 5-Digit PIN Security -->
+          <div class="panel-grid">
+            <div class="card">
+              <h3 class="card-title">🕒 Zona Horaria y Escala Visual (Monitor 4:3 / 720p)</h3>
+              <label class="field-label">
+                Zona Horaria de Registro (Sistema o Manual)
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                  <select class="select" style="flex: 1; min-width: 180px;" bind:value={timezoneInput}>
+                    <option value="Local">Hora del Sistema Windows (Automática)</option>
+                    <option value="America/Bogota">Colombia — America/Bogota (UTC-5)</option>
+                    <option value="UTC-5">UTC-5 Fijo</option>
+                    <option value="America/Lima">Perú — America/Lima (UTC-5)</option>
+                    <option value="America/Mexico_City">México — America/Mexico_City</option>
+                    <option value="America/Santiago">Chile — America/Santiago</option>
+                    <option value="America/Buenos_Aires">Argentina — America/Buenos_Aires (UTC-3)</option>
+                    <option value="custom">Otra zona horaria manual...</option>
+                  </select>
+                  {#if timezoneInput === 'custom'}
+                    <input class="input" style="max-width: 160px;" bind:value={customTimezoneValue} placeholder="Ej. America/Bogota o -05:00" />
+                  {/if}
+                </div>
+              </label>
+              <div style="font-size: 12px; color: var(--accent-blue); margin-top: 6px; margin-bottom: 12px;">
+                Zona activa: <strong>{effectiveTimezone || 'Local'}</strong> · Hora efectiva: <code>{currentLocalTime || 'En sincronía con Windows'}</code>
+              </div>
+
+              <label class="field-label">
+                Tamaño de Interfaz Visual: <strong>{uiScalePercent}%</strong> (Ideal para monitor 4:3 / 720p: 85%–90%)
+                <input type="range" min="75" max="125" step="5" bind:value={uiScalePercent} />
+              </label>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0;">
+                {#each [80, 90, 100, 110] as preset}
+                  <button
+                    type="button"
+                    class="btn {uiScalePercent === preset ? 'btn-green' : 'btn-outline'}"
+                    style="padding: 4px 10px; font-size: 12px;"
+                    onclick={() => (uiScalePercent = preset)}
+                  >
+                    {preset}%
+                  </button>
+                {/each}
+              </div>
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; cursor: pointer;">
+                <input type="checkbox" bind:checked={uiCompactMode} />
+                <span>Modo Compacto 4:3 (Espaciado optimizado para 1024x768 / 720p)</span>
+              </label>
+              <button class="btn" style="width: 100%;" disabled={loading} onclick={() => handleSavePrefs()}>
+                Guardar Zona Horaria y Tamaño de Pantalla
+              </button>
+            </div>
+
+            <div class="card">
+              <div class="card-title">
+                <span>🔐 PIN Numérico de 5 Dígitos (Modo Avanzado)</span>
+                <span class={hasAdvancedPin ? 'badge badge-ok' : 'badge badge-warn'}>
+                  {hasAdvancedPin ? 'PIN Activo' : 'Sin PIN'}
+                </span>
+              </div>
+              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
+                Protege la entrada a <strong>Modo Avanzado</strong>, la eliminación de cuentas y el reinicio de <code>cuentas.db</code> con una clave numérica de 5 dígitos.
+              </p>
+              {#if hasAdvancedPin}
+                <label class="field-label" style="margin-bottom: 8px;">
+                  PIN Actual (5 dígitos)
+                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={curPinInput} placeholder="•••••" />
+                </label>
+              {/if}
+              <div class="form-grid" style="margin-bottom: 10px;">
+                <label class="field-label">
+                  Nuevo PIN (5 números)
+                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={newPinInput} placeholder="Ej. 12345" />
+                </label>
+                <label class="field-label">
+                  Confirmar Nuevo PIN
+                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={confirmNewPinInput} placeholder="Ej. 12345" />
+                </label>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-green" disabled={loading} onclick={handleConfigurePin}>
+                  {hasAdvancedPin ? 'Cambiar PIN de 5 Dígitos' : 'Activar PIN de 5 Dígitos'}
+                </button>
+                {#if hasAdvancedPin}
+                  <button class="btn btn-red" disabled={loading} onclick={handleClearAdvancedPin}>
+                    Quitar PIN
+                  </button>
+                {/if}
+              </div>
+            </div>
+          </div>
+
           <!-- GitHub Releases Direct Auto-Updater Card -->
           <div class="card" style="border-color: var(--accent-blue); margin-bottom: 16px;">
             <div class="card-title">
@@ -2283,15 +2872,21 @@
           <div class="panel-grid">
             <div class="card">
               <h3 class="card-title">Diagnóstico Técnico (`aronium-util doctor`)</h3>
+              <div class="table-scroll">
               <table>
                 <tbody>
-                  <tr><td>pos.db (Solo Lectura)</td><td><code>{doctor?.pos_db_path}</code> ({doctor?.pos_db_readable ? 'OK' : 'No encontrado'})</td></tr>
-                  <tr><td>cuentas.db (WAL)</td><td><code>{doctor?.accounts_db_path}</code> ({doctor?.accounts_db_ready ? 'Lista' : 'Error'})</td></tr>
+                  <tr><td>pos.db (Solo Lectura)</td><td><code>{doctor?.pos_db_path}</code> ({doctor?.pos_db_readable ? `OK · ${doctor?.pos_db_product_count ?? 0} productos` : 'No encontrado / Error'})</td></tr>
+                  <tr><td>cuentas.db (WAL)</td><td><code>{doctor?.accounts_db_path}</code> ({doctor?.accounts_db_ready ? `Lista · ${doctor?.accounts_count ?? 0} cuentas` : 'Error'})</td></tr>
                   <tr><td>PRAGMA quick_check</td><td>{doctor?.quick_check_result || 'N/A'}</td></tr>
                   <tr><td>Esquema Aronium</td><td>{doctor?.aronium_schema_version || 'N/A'}</td></tr>
                   <tr><td>Outbox Offline</td><td>{doctor?.pending_outbox_count || 0} pendientes</td></tr>
                 </tbody>
               </table>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+                <button class="btn btn-outline" onclick={() => (showDbModal = true)}>Cambiar Rutas / Contraseña BD</button>
+                <button class="btn btn-red" onclick={() => (showResetTableModal = true)}>🗑️ Borrar y Recrear Tabla Cuentas</button>
+              </div>
             </div>
             <div class="card">
               <h3 class="card-title">Inicio Automático en Windows & Bandeja del Sistema</h3>

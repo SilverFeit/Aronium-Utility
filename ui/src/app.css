@@ -32,6 +32,80 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  zoom: var(--ui-zoom, 0.9);
+}
+
+.app-shell.compact-43 .mode-header {
+  padding: 9px 14px;
+  gap: 10px;
+}
+
+.app-shell.compact-43 .basic-container {
+  padding: 12px 14px 28px 14px;
+}
+
+.app-shell.compact-43 .basic-nav {
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.app-shell.compact-43 .basic-nav-btn {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.app-shell.compact-43 .card {
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.app-shell.compact-43 .main-area {
+  padding: 16px 18px;
+}
+
+.app-shell.compact-43 .layout {
+  grid-template-columns: 215px 1fr;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 16px;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-card);
+  border: 2px solid var(--accent-blue);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.65);
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 12px;
+  }
+  .panel-grid {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 .mode-header {

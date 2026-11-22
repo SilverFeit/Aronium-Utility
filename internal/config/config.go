@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type SecurityConfig struct {
+	AdvancedPINHash string `yaml:"advanced_pin_hash,omitempty" json:"-"`
+	HasAdvancedPIN  bool   `yaml:"-" json:"has_advanced_pin"`
+}
+
+type UIConfig struct {
+	ScalePercent int  `yaml:"scale_percent" json:"scale_percent"`
+	CompactMode  bool `yaml:"compact_mode" json:"compact_mode"`
+}
+
 // Config represents the declarative schema of aronium-util.yaml (TODO-006).
 type Config struct {
 	StoreID          string          `yaml:"store_id" json:"store_id"`
@@ -25,8 +36,12 @@ type Config struct {
 	CashRegisterID   string          `yaml:"cash_register_id" json:"cash_register_id"`
 	CashRegisterName string          `yaml:"cash_register_name" json:"cash_register_name"`
 	PosDBPath        string          `yaml:"pos_db_path" json:"pos_db_path"`
+	PosDBPassword    string          `yaml:"pos_db_password,omitempty" json:"pos_db_password,omitempty"`
 	AccountsDBPath   string          `yaml:"accounts_db_path" json:"accounts_db_path"`
 	StateDBPath      string          `yaml:"state_db_path" json:"state_db_path"`
+	Timezone         string          `yaml:"timezone,omitempty" json:"timezone"`
+	Security         SecurityConfig  `yaml:"security,omitempty" json:"security"`
+	UI               UIConfig        `yaml:"ui,omitempty" json:"ui"`
 	Watch            WatchConfig     `yaml:"watch" json:"watch"`
 	Credit           CreditConfig    `yaml:"credit" json:"credit"`
 	Inventory        InventoryConfig `yaml:"inventory" json:"inventory"`
@@ -202,10 +217,15 @@ func DefaultConfig() *Config {
 		PosDBPath:        DetectAroniumPosDB(),
 		AccountsDBPath:   filepath.Join(appDir, "cuentas.db"),
 		StateDBPath:      filepath.Join(appDir, "aronium_utility_state.db"),
+		Timezone:         "Local",
+		UI: UIConfig{
+			ScalePercent: 90,
+			CompactMode:  true,
+		},
 		Watch: WatchConfig{
 			PollIntervalMs: 3000,
 			DebounceMs:     1000,
-			AutoSyncDrive:  true,
+			AutoSyncDrive:  false,
 			AutoSyncHub:    false,
 			AutoEmitFiscal: false,
 		},
@@ -295,7 +315,50 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.ApplyEnvOverrides()
+	cfg.Security.HasAdvancedPIN = strings.TrimSpace(cfg.Security.AdvancedPINHash) != ""
+	if cfg.UI.ScalePercent <= 0 {
+		cfg.UI.ScalePercent = 90
+	} else if cfg.UI.ScalePercent < 75 {
+		cfg.UI.ScalePercent = 75
+	} else if cfg.UI.ScalePercent > 125 {
+		cfg.UI.ScalePercent = 125
+	}
+	if strings.TrimSpace(cfg.Timezone) == "" {
+		cfg.Timezone = "Local"
+	} else if !strings.EqualFold(cfg.Timezone, "Local") && os.Getenv("ARONIUM_TIMEZONE") == "" {
+		_ = os.Setenv("ARONIUM_TIMEZONE", cfg.Timezone)
+	}
+	if strings.TrimSpace(cfg.PosDBPassword) != "" && os.Getenv("ARONIUM_POS_DB_PASSWORD") == "" {
+		_ = os.Setenv("ARONIUM_POS_DB_PASSWORD", cfg.PosDBPassword)
+	}
 	return cfg, nil
+}
+
+// HashPIN validates a strictly 5-digit numeric PIN and returns its salted SHA-256 hex digest.
+func HashPIN(pin string) (string, error) {
+	trimmed := strings.TrimSpace(pin)
+	if len(trimmed) != 5 {
+		return "", fmt.Errorf("el PIN debe tener exactamente 5 dígitos numéricos")
+	}
+	for _, ch := range trimmed {
+		if ch < '0' || ch > '9' {
+			return "", fmt.Errorf("el PIN solo puede contener números (0-9)")
+		}
+	}
+	sum := sha256.Sum256([]byte("AroniumUtility::AdvPIN::" + trimmed))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// VerifyPIN checks whether candidatePin matches expectedHash.
+func VerifyPIN(candidatePin, expectedHash string) bool {
+	if strings.TrimSpace(expectedHash) == "" {
+		return true
+	}
+	hashed, err := HashPIN(candidatePin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(hashed, strings.TrimSpace(expectedHash))
 }
 
 // ApplyEnvOverrides merges ARONIUM_* environment variables into the runtime configuration.
@@ -329,6 +392,12 @@ func (c *Config) ApplyEnvOverrides() {
 	}
 	if v := os.Getenv("ARONIUM_BACKUP_DIR"); v != "" {
 		c.Backup.BackupDir = v
+	}
+	if v := os.Getenv("ARONIUM_POS_DB_PASSWORD"); v != "" {
+		c.PosDBPassword = v
+	}
+	if v := os.Getenv("ARONIUM_TIMEZONE"); v != "" {
+		c.Timezone = v
 	}
 }
 

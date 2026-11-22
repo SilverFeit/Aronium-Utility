@@ -26,11 +26,11 @@ import (
 )
 
 const (
-	appVersionMajor = 1
-	appVersionMinor = 2
-	appVersionPatch = 8
+	appVersionMajor = 2
+	appVersionMinor = 0
+	appVersionPatch = 0
 	appVersionBuild = 0
-	appVersionStr   = "1.2.8.0"
+	appVersionStr   = "2.0.0.0"
 )
 
 type targetBinary struct {
@@ -39,6 +39,7 @@ type targetBinary struct {
 	InternalName     string
 	OriginalFilename string
 	ProductName      string
+	RequireAdmin     bool
 }
 
 var targets = []targetBinary{
@@ -58,10 +59,11 @@ var targets = []targetBinary{
 	},
 	{
 		Dir:              "cmd/aronium-util-setup",
-		FileDescription:  "Aronium Utility Unified Setup Installer v1.2.8 (CLI + UI)",
+		FileDescription:  "Aronium Utility Unified Setup Installer v2.0.0 (CLI + UI)",
 		InternalName:     "aronium-util-setup.exe",
 		OriginalFilename: "aronium-util-setup-x64.exe",
 		ProductName:      "Aronium Utility Installer",
+		RequireAdmin:     true,
 	},
 }
 
@@ -112,7 +114,6 @@ func main() {
 	}
 	fmt.Printf("[ok] Generated multi-resolution icon: docs/assets/app-icon.ico & payload/app-icon.ico (%d bytes)\n", len(icoBytes))
 
-	manifestBytes := buildAppManifest()
 	grpIconBytes := buildGroupIconData(entries)
 
 	const (
@@ -121,6 +122,7 @@ func main() {
 	)
 
 	for _, t := range targets {
+		manifestBytes := buildAppManifest(t.RequireAdmin)
 		verBytes := buildVersionInfo(t)
 		rsrcSection, relocOffsets := buildRsrcSection(entries, grpIconBytes, verBytes, manifestBytes)
 
@@ -429,7 +431,11 @@ func buildGroupIconData(entries []iconEntry) []byte {
 	return buf.Bytes()
 }
 
-func buildAppManifest() []byte {
+func buildAppManifest(requireAdmin bool) []byte {
+	execLevel := "asInvoker"
+	if requireAdmin {
+		execLevel = "requireAdministrator"
+	}
 	xml := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="` + appVersionStr + `" processorArchitecture="*" name="SilverFeit.AroniumUtility" type="win32"/>
@@ -437,7 +443,7 @@ func buildAppManifest() []byte {
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+        <requestedExecutionLevel level="` + execLevel + `" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

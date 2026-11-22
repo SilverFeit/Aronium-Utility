@@ -8,6 +8,7 @@ export PATH="/opt/homebrew/bin:/usr/local/go/bin:${PATH}"
 BIN_DIR="${ROOT_DIR}/dist/bin"
 CLI_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/aronium-util.bin"
 UI_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/aronium-utility-ui.bin"
+CERT_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/AroniumUtility-CodeSigning.cer"
 UI_EMBED_DIST="${ROOT_DIR}/cmd/aronium-utility-ui/dist"
 
 rm -rf "${BIN_DIR}"
@@ -16,6 +17,7 @@ mkdir -p "${BIN_DIR}/windows-amd64" "${BIN_DIR}/windows-386" "$(dirname "${CLI_P
 cleanup_payload() {
     echo "PLACEHOLDER_PAYLOAD" > "${CLI_PAYLOAD_FILE}"
     echo "PLACEHOLDER_UI_PAYLOAD" > "${UI_PAYLOAD_FILE}"
+    echo "PLACEHOLDER_CERT" > "${CERT_PAYLOAD_FILE}"
 }
 trap cleanup_payload EXIT
 
@@ -91,6 +93,7 @@ sign_win_exe "${BIN_DIR}/windows-amd64/aronium-utility-ui.exe" "Aronium Utility 
 echo "[3/6] Cross-compiling self-contained Windows x64 Unified Setup Installer (aronium-util-setup-x64.exe)..."
 cp "${BIN_DIR}/windows-amd64/aronium-util.exe" "${CLI_PAYLOAD_FILE}"
 cp "${BIN_DIR}/windows-amd64/aronium-utility-ui.exe" "${UI_PAYLOAD_FILE}"
+[[ -f "${CERT_CER}" ]] && cp "${CERT_CER}" "${CERT_PAYLOAD_FILE}"
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
     -o "${BIN_DIR}/windows-amd64/aronium-util-setup-x64.exe" "${ROOT_DIR}/cmd/aronium-util-setup"
 sign_win_exe "${BIN_DIR}/windows-amd64/aronium-util-setup-x64.exe" "Aronium Utility Unified Installer x64"

@@ -25,7 +25,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const AppVersion = "1.2.8"
+const AppVersion = "2.0.0"
 
 //go:embed all:dist
 var embeddedFrontend embed.FS
@@ -385,7 +385,7 @@ func launchNativeOSWebViewWindow(appURL string) (*exec.Cmd, error) {
 				cmd := exec.Command(
 					edge,
 					"--app="+appURL,
-					"--window-size=1260,820",
+					"--window-size=1024,740",
 					"--user-data-dir="+profileDir,
 					"--no-first-run",
 					"--no-default-browser-check",
