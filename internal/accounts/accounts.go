@@ -904,6 +904,87 @@ func (m *Manager) ListAccountsByID(sharedID string) ([]AccountSummary, error) {
 	return out, nil
 }
 
+// DeletePaidAccount permanently deletes an account (and its cascaded ledger history)
+// if and only if its current pending balance is strictly zero ($0).
+func (m *Manager) DeletePaidAccount(accountID, customerName string) (*AccountSummary, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, fmt.Errorf("cuenta_id es obligatorio para eliminar una cuenta")
+	}
+
+	tx, err := m.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	accountKey, displayID, name, defaultMethod, status, creditLimit, err := resolveAccountRow(tx, accountID, customerName)
+	if err != nil {
+		return nil, err
+	}
+
+	var totalCharges, totalPayments, totalAdjustments int64
+	err = tx.QueryRow(`
+		SELECT
+			COALESCE(SUM(CASE WHEN tipo = 'CARGO' THEN monto ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN tipo = 'ABONO' THEN monto ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN tipo = 'AJUSTE' THEN monto ELSE 0 END), 0)
+		FROM movimientos
+		WHERE cuenta_id = ?;
+	`, accountKey).Scan(&totalCharges, &totalPayments, &totalAdjustments)
+	if err != nil {
+		return nil, err
+	}
+
+	balance := totalCharges - totalPayments + totalAdjustments
+	if balance > 0 {
+		return nil, fmt.Errorf("no se puede eliminar la cuenta [%s] %s porque aún tiene saldo pendiente de $%d", displayID, name, balance)
+	}
+	if balance < 0 {
+		return nil, fmt.Errorf("no se puede eliminar la cuenta [%s] %s porque tiene un saldo a favor de $%d (ajusta a $0 primero)", displayID, name, -balance)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM movimiento_items WHERE movimiento_id IN (SELECT id FROM movimientos WHERE cuenta_id = ?);`, accountKey); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`DELETE FROM movimientos WHERE cuenta_id = ?;`, accountKey); err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(`DELETE FROM cuentas WHERE account_key = ?;`, accountKey)
+	if err != nil {
+		return nil, err
+	}
+	if aff, _ := res.RowsAffected(); aff == 0 {
+		return nil, fmt.Errorf("cuenta [%s] %s no encontrada para eliminar", displayID, name)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	tx = nil
+
+	if m.DBPath != "" {
+		snapPath := filepath.Join(filepath.Dir(m.DBPath), "backups", "cuentas_pre_install_snapshot.db")
+		_ = m.OnlineBackupAccountsDB(context.Background(), snapPath)
+	}
+
+	return &AccountSummary{
+		AccountKey:       accountKey,
+		ID:               displayID,
+		Name:             name,
+		PaymentMethod:    defaultMethod,
+		CreditLimit:      creditLimit,
+		Status:           AccountStatus(status),
+		TotalCharges:     totalCharges,
+		TotalPayments:    totalPayments,
+		TotalAdjustments: totalAdjustments,
+		CurrentBalance:   0,
+	}, nil
+}
+
 // ListAccounts returns the full immutable ledger report across all accounts in cuentas.db.
 func (m *Manager) ListAccounts(search string) (*AccountsLedgerReport, error) {
 	rows, err := db.WithRetry(5, func() (*sql.Rows, error) {

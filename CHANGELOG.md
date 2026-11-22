@@ -2,6 +2,16 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.4] — 2026-11-22
+
+### Added
+- **Delete Settled Accounts from Advanced View & CLI (`saldo_actual == 0` Guard):**
+  - Added `DeletePaidAccount` in `internal/accounts` enforcing strictly zero balance (`saldo_actual == 0`), cascading ledger cleanup, and immediate update of the recovery snapshot (`cuentas_pre_install_snapshot.db`).
+  - Added **`Acciones → Eliminar`** button with inline confirmation inside **Modo Avanzado → `2. Ledger Cuentas (cuentas.db)`** (enabled only when `saldo_actual === 0`; accounts with pending balance show `Saldo pendiente` and cannot be deleted).
+  - Added CLI subcommand `aronium-util accounts delete --account-id <id> --name <nombre>`.
+
+---
+
 ## [1.2.3] — 2026-11-22
 
 ### Added

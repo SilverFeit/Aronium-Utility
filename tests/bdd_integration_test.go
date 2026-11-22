@@ -1179,4 +1179,34 @@ func TestBDD_CompoundSharedAccountID_QuickValues_IconBrightness_And_SchemaMigrat
 		t.Fatalf("updater.DownloadAndApply failed: %+v (err=%v)", appRes, err)
 	}
 	_ = os.Remove(appRes.InstallerPath)
+
+	// 8. Delete Paid Account strictly enforced: blocked while balance > 0, allowed once settled to $0
+	if _, err := recoveredMgr.DeletePaidAccount("Parques-18502", "Ana Gómez"); err == nil {
+		t.Fatalf("expected DeletePaidAccount to fail while Ana still owes 3600")
+	}
+
+	settledAna, err := recoveredMgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "Parques-18502",
+		CustomerName:  "Ana Gómez",
+		Type:          accounts.MovementPayment,
+		Amount:        3600,
+		PaymentMethod: "QR",
+		Note:          "Liquidación total",
+	})
+	if err != nil || settledAna.CurrentBalance != 0 {
+		t.Fatalf("expected Ana balance 0 after settling, got %+v (err=%v)", settledAna, err)
+	}
+
+	deletedAna, err := recoveredMgr.DeletePaidAccount("Parques-18502", "Ana Gómez")
+	if err != nil || deletedAna == nil || deletedAna.Name != "Ana Gómez" {
+		t.Fatalf("DeletePaidAccount failed after zero balance: %+v (err=%v)", deletedAna, err)
+	}
+
+	if _, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Ana Gómez"); err == nil {
+		t.Fatalf("expected deleted account Ana Gómez to be absent from cuentas.db")
+	}
+	carlosStillThere, err := recoveredMgr.GetAccountByIDAndName("Parques-18502", "Carlos Ruiz")
+	if err != nil || carlosStillThere.CurrentBalance != 5000 {
+		t.Fatalf("expected sibling account Carlos Ruiz to remain intact after deleting Ana: %+v (err=%v)", carlosStillThere, err)
+	}
 }

@@ -47,6 +47,8 @@
   let updateApplyResult = $state<UpdateApplyResult | null>(null);
   let checkingUpdate = $state(false);
   let applyingUpdate = $state(false);
+  let confirmDeleteAccount = $state<CustomerAccount | null>(null);
+  let deletingAccount = $state(false);
 
   // Database path selector inputs
   let customPosDbPath = $state('');
@@ -743,6 +745,36 @@
       showToast(`Error aplicando actualización desde GitHub: ${e?.message || e}`, true);
     } finally {
       applyingUpdate = false;
+    }
+  }
+
+  async function handleDeletePaidAccount(acc: CustomerAccount) {
+    if (acc.saldo_actual !== 0) {
+      showToast(
+        `No se puede eliminar la cuenta "${acc.nombre}" porque aún tiene saldo pendiente ($${acc.saldo_actual.toLocaleString()}).`,
+        true
+      );
+      confirmDeleteAccount = null;
+      return;
+    }
+    deletingAccount = true;
+    try {
+      await runAroniumCLI([
+        'accounts',
+        'delete',
+        '--account-id',
+        accKeyOf(acc),
+        '--name',
+        acc.nombre,
+        '--json',
+      ]);
+      confirmDeleteAccount = null;
+      await refreshAll();
+      showToast(`Cuenta pagada [${acc.id}] ${acc.nombre} eliminada definitivamente de cuentas.db.`);
+    } catch (e: any) {
+      showToast(`No se pudo eliminar la cuenta: ${e?.message || e}`, true);
+    } finally {
+      deletingAccount = false;
     }
   }
 
@@ -1918,6 +1950,35 @@
         {/if}
 
         {#if advTab === 'accounts'}
+          {#if confirmDeleteAccount}
+            <div
+              class="card"
+              style="border-color: var(--accent-red); background: rgba(248, 113, 113, 0.12); margin-bottom: 14px;"
+            >
+              <div class="card-title" style="color: #fecaca;">
+                <span>Confirmar Eliminación de Cuenta Pagada</span>
+                <button class="btn btn-outline" onclick={() => (confirmDeleteAccount = null)}>Cancelar</button>
+              </div>
+              <p style="font-size: 13.5px; color: #fee2e2; margin-top: 0;">
+                ¿Eliminar definitivamente la cuenta <strong>[{confirmDeleteAccount.id}] {confirmDeleteAccount.nombre}</strong>?
+                Su saldo actual es <strong>$0</strong> (totalmente pagada). Esta acción borrará su historial de
+                movimientos en <code>cuentas.db</code> y actualizará Google Drive.
+              </p>
+              <div style="display: flex; gap: 10px;">
+                <button
+                  class="btn btn-red"
+                  disabled={deletingAccount}
+                  onclick={() => confirmDeleteAccount && handleDeletePaidAccount(confirmDeleteAccount)}
+                >
+                  {deletingAccount ? 'Eliminando...' : 'Sí, Eliminar Cuenta Pagada'}
+                </button>
+                <button class="btn btn-outline" disabled={deletingAccount} onclick={() => (confirmDeleteAccount = null)}>
+                  No, Conservar
+                </button>
+              </div>
+            </div>
+          {/if}
+
           <div class="card">
             <div class="card-title">
               <span>Libro Mayor de Cuentas (<code>{accountsReport?.accounts_db_path}</code>)</span>
@@ -1936,6 +1997,7 @@
                   <th>Saldo Actual</th>
                   <th>Tope</th>
                   <th>Estado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1943,12 +2005,28 @@
                   <tr>
                     <td><code>{acc.id}</code></td>
                     <td><strong>{acc.nombre}</strong></td>
-                    <td>{acc.telefono}</td>
+                    <td>{acc.telefono || '—'}</td>
                     <td>${acc.total_cargos.toLocaleString()}</td>
                     <td>${acc.total_abonos.toLocaleString()}</td>
                     <td><strong>${acc.saldo_actual.toLocaleString()}</strong></td>
                     <td>${acc.tope_credito.toLocaleString()}</td>
                     <td><span class={statusBadgeClass(acc.estado)}>{acc.estado}</span></td>
+                    <td>
+                      {#if acc.saldo_actual === 0}
+                        <button
+                          class="btn btn-red"
+                          style="padding: 5px 10px; font-size: 12px;"
+                          disabled={deletingAccount}
+                          onclick={() => (confirmDeleteAccount = acc)}
+                        >
+                          Eliminar
+                        </button>
+                      {:else}
+                        <span class="badge badge-warn" title="Solo se puede eliminar cuando el saldo pendiente sea $0">
+                          Saldo pendiente
+                        </span>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               </tbody>

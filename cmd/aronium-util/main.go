@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "1.2.3"
+const Version = "1.2.4"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -117,7 +117,7 @@ COMANDOS PRINCIPALES:
   ui          Lanza la aplicación gráfica de escritorio "Aronium Utility UI" (Tauri 2 + Svelte + TypeScript)
   init        Configura aronium-util.yaml (autodetecta pos.db, crea cuentas.db, ID de caja POS-01, Google Drive)
   doctor      Diagnóstico de salud (pos.db solo lectura, cuentas.db WAL, esquema, credenciales, cajas)
-  accounts    Libro mayor dedicado en cuentas.db (list, create, charge, pay, statement, status)
+  accounts    Libro mayor dedicado en cuentas.db (list, create, charge, pay, by-id, delete, migrate, status, statement)
   catalog     Búsqueda en vivo de productos y códigos de barras en pos.db (search)
   config      Consulta y configura rutas de bases de datos (get, set-db, pick-db)
   drive       Conexión directa a Google Drive & Google Sheets con autenticación vía Web (login, sync, status)
@@ -1780,8 +1780,49 @@ func runAccounts(args []string) error {
 		fmt.Println(stmt)
 		return nil
 
+	case "delete", "remove", "eliminar":
+		fs := flag.NewFlagSet("accounts delete", flag.ContinueOnError)
+		accountID := fs.String("account-id", "", "ID o account_key de la cuenta totalmente pagada")
+		custName := fs.String("name", "", "Nombre del cliente cuando varias cuentas comparten el mismo ID")
+		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive después de eliminar")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		targetID := *accountID
+		if targetID == "" && len(fs.Args()) > 0 {
+			targetID = fs.Args()[0]
+		}
+
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		deletedAcc, err := mgr.DeletePaidAccount(targetID, *custName)
+		if err != nil {
+			return err
+		}
+
+		var syncRes *sync.SyncResult
+		if *autoSync {
+			syncRes = syncAccountsBestEffort(cfg)
+		}
+
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"deleted":     deletedAcc,
+				"sync_result": syncRes,
+			})
+		}
+		fmt.Printf("[✓] Cuenta totalmente pagada eliminada: [%s] %s (Saldo: $0)\n", deletedAcc.ID, deletedAcc.Name)
+		return nil
+
 	default:
-		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, migrate, status, statement)", sub)
+		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, delete, migrate, status, statement)", sub)
 	}
 }
 
