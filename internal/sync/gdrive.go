@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
 	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
@@ -53,6 +54,7 @@ type OAuthToken struct {
 type SyncResult struct {
 	Timestamp          time.Time         `json:"timestamp"`
 	MasterWorkbookPath string            `json:"master_workbook_path"`
+	AccountsBackupPath string            `json:"accounts_backup_path,omitempty"`
 	CustomerFiles      []string          `json:"customer_files"`
 	InventoryFiles     []string          `json:"inventory_files"`
 	UploadedDriveIDs   map[string]string `json:"uploaded_drive_ids,omitempty"`
@@ -438,11 +440,11 @@ func sanitizeFileName(name string) string {
 	return clean
 }
 
-// SyncAll synchronizes Live Inventory + Customer Credit Accounts into:
-// 1. Atomic Local Google Drive folder hierarchy (/AroniumUtility/Aronium_Inventario_y_Cuentas_Credito.xlsx + /Inventario/ + /Cuentas_Credito/Clientes/<Cliente>.xlsx)
+// SyncAll synchronizes Live Net Inventory + Dedicated Accounts Ledger (cuentas.db) into:
+// 1. Atomic Local Google Drive folder hierarchy (/AroniumUtility/Aronium_Inventario_y_Cuentas_Credito.xlsx + /Inventario/ + /Cuentas_Credito/Clientes/ + cuentas_backup.db)
 // 2. Google Drive API v3 (preserving stable file_id per file)
-// 3. Google Sheets API v4 (Resumen_Cuentas_Credito, Detalle_Cuentas_Credito, Inventario, and Customer tabs)
-// 4. Offline Outbox Queue if network is down (TODO-026, TODO-027, TODO-028).
+// 3. Google Sheets API v4 (Cuentas, Movimientos, Detalle_Articulos, Inventario_Neto, and Customer tabs)
+// 4. Offline Outbox Queue if network is down (TODO-026..028, TODO-106).
 func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	invEngine := inventory.NewEngine(m.Cfg, m.PosDB, m.StateDB)
 	invReport, err := invEngine.BuildReport(30)
@@ -451,11 +453,18 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	}
 	_, _ = invEngine.SyncKardexFromDocuments()
 
-	creditEngine := credit.NewEngine(m.Cfg, m.PosDB, m.StateDB)
-	ledgerReport, err := creditEngine.BuildLedger("", 0)
-	if err != nil {
-		return nil, fmt.Errorf("credit ledger build failed: %w", err)
+	var accMgr *accounts.Manager
+	var accLedger *accounts.AccountsLedgerReport
+	if strings.TrimSpace(m.Cfg.AccountsDBPath) != "" {
+		if mgr, err := accounts.NewManager(m.Cfg.AccountsDBPath); err == nil {
+			accMgr = mgr
+			defer accMgr.Close()
+			accLedger, _ = accMgr.ListAccounts("")
+		}
 	}
+
+	creditEngine := credit.NewEngine(m.Cfg, m.PosDB, m.StateDB)
+	posCreditLedger, _ := creditEngine.BuildLedger("", 0)
 
 	syncRoot := filepath.Join(m.Cfg.GoogleDrive.LocalDriveSyncDir, m.Cfg.GoogleDrive.RootFolderName)
 	invDir := filepath.Join(syncRoot, "Inventario")
@@ -474,7 +483,7 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	}
 
 	// 1. Build & write Master Unified Table (Aronium_Inventario_y_Cuentas_Credito.xlsx)
-	masterSheets := BuildMasterWorkbookSheets(invReport, ledgerReport, m.Cfg.GoogleDrive.PerCustomerSheets)
+	masterSheets := BuildMasterWorkbookSheets(invReport, accLedger, posCreditLedger, m.Cfg.GoogleDrive.PerCustomerSheets)
 	masterBytes, err := BuildXLSXBytes(masterSheets)
 	if err != nil {
 		return nil, err
@@ -489,25 +498,40 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 	}
 	res.MasterWorkbookPath = masterPath
 
-	// 2. Write Inventory standalone .xlsx and .csv
-	invOnlyXLSX, err := BuildXLSXBytes([]SheetData{masterSheets[2]})
-	if err == nil {
-		invXLSXPath := filepath.Join(invDir, "Inventario_Actual.xlsx")
-		_ = WriteAtomicFile(invXLSXPath, invOnlyXLSX)
-		res.InventoryFiles = append(res.InventoryFiles, invXLSXPath)
-	}
-	invCSVPath := filepath.Join(invDir, "Inventario_Actual.csv")
-	if err := writeCSVAtomic(invCSVPath, masterSheets[2].Rows); err == nil {
-		res.InventoryFiles = append(res.InventoryFiles, invCSVPath)
+	// Helper to locate a sheet by name
+	findSheet := func(name string) (SheetData, bool) {
+		for _, s := range masterSheets {
+			if s.Name == name {
+				return s, true
+			}
+		}
+		return SheetData{}, false
 	}
 
-	// 3. Write Resumen_Cuentas_Credito.csv & Detalle_Cuentas_Credito.csv
-	resumenCSVPath := filepath.Join(creditDir, "Resumen_Cuentas_Credito.csv")
-	_ = writeCSVAtomic(resumenCSVPath, masterSheets[0].Rows)
-	detalleCSVPath := filepath.Join(creditDir, "Detalle_Cuentas_Credito.csv")
-	_ = writeCSVAtomic(detalleCSVPath, masterSheets[1].Rows)
+	// 2. Write Inventory Net standalone .xlsx and .csv
+	if invSheet, ok := findSheet("Inventario_Neto"); ok {
+		if invOnlyXLSX, err := BuildXLSXBytes([]SheetData{invSheet}); err == nil {
+			invXLSXPath := filepath.Join(invDir, "Inventario_Neto.xlsx")
+			_ = WriteAtomicFile(invXLSXPath, invOnlyXLSX)
+			res.InventoryFiles = append(res.InventoryFiles, invXLSXPath)
+		}
+		invCSVPath := filepath.Join(invDir, "Inventario_Neto.csv")
+		if err := writeCSVAtomic(invCSVPath, invSheet.Rows); err == nil {
+			res.InventoryFiles = append(res.InventoryFiles, invCSVPath)
+		}
+	}
 
-	// 4. Route & write individual Customer Account files (/AroniumUtility/Cuentas_Credito/Clientes/<Nombre_Cliente>.xlsx, .csv, _Estado_Cuenta.txt) (TODO-018, TODO-026)
+	// 3. Write Cuentas.csv, Movimientos.csv, Detalle_Articulos.csv
+	if cuentasSheet, ok := findSheet("Cuentas"); ok {
+		_ = writeCSVAtomic(filepath.Join(creditDir, "Cuentas.csv"), cuentasSheet.Rows)
+	}
+	if movSheet, ok := findSheet("Movimientos"); ok {
+		_ = writeCSVAtomic(filepath.Join(creditDir, "Movimientos.csv"), movSheet.Rows)
+	}
+	if detSheet, ok := findSheet("Detalle_Articulos"); ok {
+		_ = writeCSVAtomic(filepath.Join(creditDir, "Detalle_Articulos.csv"), detSheet.Rows)
+	}
+
 	type uploadTarget struct {
 		LogicalPath string
 		LocalPath   string
@@ -522,33 +546,70 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 		Content:     masterBytes,
 	})
 
-	for _, acc := range ledgerReport.Accounts {
-		safeName := sanitizeFileName(acc.CustomerName)
-		custRows := BuildCustomerSheetRows(acc)
-
-		custXLSXBytes, err := BuildXLSXBytes([]SheetData{{Name: "Cuenta_" + acc.CustomerName, Rows: custRows}})
-		if err == nil {
-			custXLSXPath := filepath.Join(clientesDir, safeName+".xlsx")
-			if err := WriteAtomicFile(custXLSXPath, custXLSXBytes); err == nil {
-				res.CustomerFiles = append(res.CustomerFiles, custXLSXPath)
+	// 4. Hot Online Backup of cuentas.db via SQLite VACUUM INTO (TODO-106)
+	if accMgr != nil {
+		backupDBPath := filepath.Join(creditDir, "cuentas_backup.db")
+		if err := accMgr.OnlineBackupAccountsDB(ctx, backupDBPath); err == nil {
+			res.AccountsBackupPath = backupDBPath
+			if dbBytes, err := os.ReadFile(backupDBPath); err == nil {
 				uploads = append(uploads, uploadTarget{
-					LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/Clientes/%s.xlsx", m.Cfg.GoogleDrive.RootFolderName, safeName),
-					LocalPath:   custXLSXPath,
-					MimeType:    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-					Content:     custXLSXBytes,
+					LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/cuentas_backup.db", m.Cfg.GoogleDrive.RootFolderName),
+					LocalPath:   backupDBPath,
+					MimeType:    "application/x-sqlite3",
+					Content:     dbBytes,
 				})
 			}
 		}
-
-		custCSVPath := filepath.Join(clientesDir, safeName+".csv")
-		_ = writeCSVAtomic(custCSVPath, custRows)
-
-		stmtText := credit.GenerateStatement(acc, m.Cfg.StoreName, m.Cfg.Inventory.DualCurrencyCode, m.Cfg.Inventory.DualCurrencyRate)
-		stmtPath := filepath.Join(clientesDir, safeName+"_Estado_Cuenta.txt")
-		_ = WriteAtomicFile(stmtPath, []byte(stmtText))
 	}
 
-	// 5. Upload to Google Drive API v3 & Google Sheets API v4 if authenticated
+	// 5. Route & write individual Customer Account files (/AroniumUtility/Cuentas_Credito/Clientes/<ID>_<Nombre>.xlsx, .csv, _Estado_Cuenta.txt)
+	if accLedger != nil {
+		for _, acc := range accLedger.Accounts {
+			safeName := sanitizeFileName(acc.ID + "_" + acc.Name)
+			custRows := BuildAccountSheetRows(acc)
+
+			if custXLSXBytes, err := BuildXLSXBytes([]SheetData{{Name: "Cuenta_" + acc.Name, Rows: custRows}}); err == nil {
+				custXLSXPath := filepath.Join(clientesDir, safeName+".xlsx")
+				if err := WriteAtomicFile(custXLSXPath, custXLSXBytes); err == nil {
+					res.CustomerFiles = append(res.CustomerFiles, custXLSXPath)
+					uploads = append(uploads, uploadTarget{
+						LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/Clientes/%s.xlsx", m.Cfg.GoogleDrive.RootFolderName, safeName),
+						LocalPath:   custXLSXPath,
+						MimeType:    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+						Content:     custXLSXBytes,
+					})
+				}
+			}
+
+			_ = writeCSVAtomic(filepath.Join(clientesDir, safeName+".csv"), custRows)
+			stmtText := accounts.GenerateStatement(acc, m.Cfg.StoreName)
+			_ = WriteAtomicFile(filepath.Join(clientesDir, safeName+"_Estado_Cuenta.txt"), []byte(stmtText))
+		}
+	}
+
+	if posCreditLedger != nil {
+		for _, acc := range posCreditLedger.Accounts {
+			safeName := sanitizeFileName(acc.CustomerName)
+			custRows := BuildCustomerSheetRows(acc)
+			if custXLSXBytes, err := BuildXLSXBytes([]SheetData{{Name: "POS_" + acc.CustomerName, Rows: custRows}}); err == nil {
+				custXLSXPath := filepath.Join(clientesDir, "POS_"+safeName+".xlsx")
+				if err := WriteAtomicFile(custXLSXPath, custXLSXBytes); err == nil {
+					res.CustomerFiles = append(res.CustomerFiles, custXLSXPath)
+					uploads = append(uploads, uploadTarget{
+						LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/Clientes/POS_%s.xlsx", m.Cfg.GoogleDrive.RootFolderName, safeName),
+						LocalPath:   custXLSXPath,
+						MimeType:    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+						Content:     custXLSXBytes,
+					})
+				}
+			}
+			_ = writeCSVAtomic(filepath.Join(clientesDir, "POS_"+safeName+".csv"), custRows)
+			stmtText := credit.GenerateStatement(acc, m.Cfg.StoreName, m.Cfg.Inventory.DualCurrencyCode, m.Cfg.Inventory.DualCurrencyRate)
+			_ = WriteAtomicFile(filepath.Join(clientesDir, "POS_"+safeName+"_Estado_Cuenta.txt"), []byte(stmtText))
+		}
+	}
+
+	// 6. Upload to Google Drive API v3 & Google Sheets API v4 if authenticated
 	tok, tokErr := m.EnsureValidToken(ctx)
 	if tokErr == nil && tok != nil && tok.AccessToken != "" {
 		// Flush any previously queued offline outbox items first (TODO-028)

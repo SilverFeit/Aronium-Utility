@@ -25,6 +25,9 @@ export interface InventoryItem {
   category: string;
   measurement_unit: string;
   stock_quantity: number;
+  aronium_stock: number;
+  committed_in_accounts_qty: number;
+  net_stock_quantity: number;
   min_stock: number;
   cost: number;
   sale_price: number;
@@ -53,6 +56,29 @@ export interface InventoryReport {
   items: InventoryItem[];
 }
 
+export interface CatalogProduct {
+  id: number;
+  product_group_id: number;
+  product_group_name: string;
+  name: string;
+  code: string;
+  barcode: string;
+  barcodes?: string[];
+  measurement_unit: string;
+  price: number;
+  cost: number;
+  is_enabled: boolean;
+  stock_quantity: number;
+  committed_in_accounts_qty: number;
+  net_stock_quantity: number;
+}
+
+export interface CatalogSearchResponse {
+  exact_match?: CatalogProduct | null;
+  matches: CatalogProduct[];
+  pos_db_mtime: string;
+}
+
 export interface KardexEntry {
   id: number;
   document_id: number;
@@ -66,58 +92,65 @@ export interface KardexEntry {
   recorded_at: string;
 }
 
-export interface CreditTransaction {
-  document_id: number;
-  document_number: string;
-  date: string;
-  due_date: string;
-  cash_register_id: string;
-  customer_id: number;
-  customer_name: string;
-  customer_phone: string;
-  items_summary: string;
-  total_document: number;
-  paid_amount: number;
-  pending_balance: number;
-  payment_breakdown: string;
-  aronium_note: string;
-  cli_notes?: string[];
-  combined_notes: string;
-  overdue_days: number;
-  status: string;
+// --- Dedicated Accounts Ledger (cuentas.db) ---
+
+export interface AccountMovementItemInput {
+  aronium_product_id: number;
+  codigo_barras: string;
+  nombre_snapshot: string;
+  precio_unitario_snapshot: number;
+  cantidad: number;
 }
 
-export interface CustomerCreditAccount {
-  customer_id: number;
-  customer_code: string;
-  customer_name: string;
-  tax_number: string;
-  phone_number: string;
-  email: string;
-  total_credit_issued: number;
-  total_payments_paid: number;
-  pending_balance: number;
-  credit_limit: number;
-  available_credit: number;
-  exceeds_credit_limit: boolean;
-  max_overdue_days: number;
-  last_purchase_date: string;
-  last_payment_date: string;
-  account_status: string;
-  account_notes?: string[];
-  transactions: CreditTransaction[];
+export interface AccountMovementItem {
+  id: number;
+  movimiento_id: number;
+  aronium_product_id: number;
+  codigo_barras: string;
+  nombre_snapshot: string;
+  precio_unitario_snapshot: number;
+  cantidad: number;
+  subtotal: number;
 }
 
-export interface LedgerReport {
+export interface AccountMovement {
+  id: number;
+  cuenta_id: string;
+  tipo: 'CARGO' | 'ABONO' | 'AJUSTE';
+  monto: number;
+  metodo_pago_usado: string;
+  nota: string;
+  fecha: string;
+  items?: AccountMovementItem[];
+}
+
+export interface CustomerAccount {
+  id: string;
+  nombre: string;
+  telefono: string;
+  metodo_pago: string;
+  tope_credito: number;
+  descripcion: string;
+  estado: 'ACTIVA' | 'BLOQUEADA' | 'CERRADA';
+  creado_en: string;
+  actualizado_en: string;
+  total_cargos: number;
+  total_abonos: number;
+  total_ajustes: number;
+  saldo_actual: number;
+  credito_disponible: number;
+  excede_tope: boolean;
+  movimientos?: AccountMovement[];
+}
+
+export interface AccountsLedgerReport {
   generated_at: string;
-  store_id: string;
-  cash_register_id: string;
-  total_pending_portfolio: number;
-  active_debtor_count: number;
-  over_limit_count: number;
-  overdue_count: number;
-  accounts: CustomerCreditAccount[];
-  all_transactions: CreditTransaction[];
+  accounts_db_path: string;
+  total_saldo_pendiente: number;
+  cuentas_activas_con_saldo: number;
+  total_cuentas: number;
+  cuentas_sobre_tope: number;
+  cuentas: CustomerAccount[];
 }
 
 export interface DashboardSnapshot {
@@ -127,7 +160,7 @@ export interface DashboardSnapshot {
   registers: RegisterIdentity[];
   sales_by_register: RegisterSalesSummary[];
   inventory_summary: InventoryReport;
-  credit_portfolio: LedgerReport;
+  accounts_summary?: AccountsLedgerReport;
 }
 
 export interface ProductSalesRank {
@@ -165,12 +198,30 @@ export interface DoctorReport {
   missing_core_tables: string[];
   state_db_path: string;
   state_db_ready: boolean;
+  accounts_db_path: string;
+  accounts_db_ready: boolean;
   cash_register_id: string;
   register_id_conflict: boolean;
   gdrive_configured: boolean;
   gdrive_token_valid: boolean;
   pending_outbox_count: number;
   warnings: string[];
+}
+
+export interface ConfigInfoResponse {
+  config_path: string;
+  config: {
+    store_id: string;
+    store_name: string;
+    cash_register_id: string;
+    pos_db_path: string;
+    accounts_db_path: string;
+    state_db_path: string;
+  };
+  default_pos_db_path: string;
+  default_pos_db_exists: boolean;
+  pos_db_exists: boolean;
+  accounts_db_exists: boolean;
 }
 
 export interface DriveStatus {
@@ -185,6 +236,7 @@ export interface DriveStatus {
 export interface SyncResult {
   timestamp: string;
   master_workbook_path: string;
+  accounts_backup_path?: string;
   customer_files: string[];
   inventory_files: string[];
   uploaded_drive_ids?: Record<string, string>;

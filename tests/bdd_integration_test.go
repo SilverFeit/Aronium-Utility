@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/admin"
 	"github.com/SilverFeit/Aronium-Utility/internal/backup"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
@@ -627,5 +630,271 @@ func TestBDD_HighVolumePerformanceBenchmark_TC026(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("TC-026 inventory valuation took too long (%s > 3s)", elapsed)
+	}
+}
+
+// BDD Scenario 10 (v1.2.0): Dual-Database Isolation (cuentas.db WAL + pos.db Read-Only),
+// HID Barcode Scanner, Frozen Price Snapshots, Strict Credit Limits, Net Inventory & Drive Export
+func TestBDD_DedicatedAccountsDB_Scanner_FrozenPrices_And_NetInventory(t *testing.T) {
+	cfg, tmpDir := setupTestEnv(t)
+	cfg.AccountsDBPath = filepath.Join(tmpDir, "cuentas.db")
+	cfg.Credit.CreditLimitPolicy = "strict"
+
+	// Seed 5 additional catalog items + barcodes in pos.db so we scan 10 distinct barcodes end-to-end
+	wConn, err := testutil.OpenWritablePosDB(cfg.PosDBPath)
+	if err != nil {
+		t.Fatalf("OpenWritablePosDB: %v", err)
+	}
+	for i := 6; i <= 10; i++ {
+		if _, err := wConn.Exec(`INSERT INTO Product (Id, ProductGroupId, Name, Code, MeasurementUnit, Price, Cost) VALUES (?, 1, ?, ?, 'UND', ?, 2000);`,
+			i, fmt.Sprintf("Producto Escáner #%d", i), fmt.Sprintf("SCN-00%d", i), int64(i*1000)); err != nil {
+			t.Fatalf("insert extra product %d: %v", i, err)
+		}
+		if _, err := wConn.Exec(`INSERT INTO Barcode (ProductId, Value) VALUES (?, ?);`, i, fmt.Sprintf("77012345000%d0", i)); err != nil {
+			t.Fatalf("insert extra barcode %d: %v", i, err)
+		}
+		if _, err := wConn.Exec(`INSERT INTO Stock (ProductId, WarehouseId, Quantity) VALUES (?, 1, 20);`, i); err != nil {
+			t.Fatalf("insert extra stock %d: %v", i, err)
+		}
+	}
+	var initialDocCount, initialPayCount int
+	_ = wConn.QueryRow(`SELECT COUNT(*) FROM Document;`).Scan(&initialDocCount)
+	_ = wConn.QueryRow(`SELECT COUNT(*) FROM Payment;`).Scan(&initialPayCount)
+	_ = wConn.Close()
+
+	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	if err != nil {
+		t.Fatalf("OpenPosDBReadOnly: %v", err)
+	}
+	defer posConn.Close()
+
+	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer stateConn.Close()
+
+	accMgr, err := accounts.NewManager(cfg.AccountsDBPath)
+	if err != nil {
+		t.Fatalf("accounts.NewManager: %v", err)
+	}
+	defer accMgr.Close()
+
+	// 1. Simulate HID Barcode Scanner capturing 10 distinct barcodes from pos.db (zero write to pos.db)
+	scannedBarcodes := []string{
+		"7701234500011", // Arroz 4500 (stock 45)
+		"7701234500028", // Aceite 11000 (stock 18)
+		"7701234500035", // Leche 4200
+		"7701234500042", // Café 16500
+		"7701234500059", // Menú 28000
+		"7701234500060", // Producto #6 6000
+		"7701234500070", // Producto #7 7000
+		"7701234500080", // Producto #8 8000
+		"7701234500090", // Producto #9 9000
+		"77012345000100", // Wait: i=10 formatted as 77012345000100
+	}
+	var items []accounts.MovementItemInput
+	var expectedTotal int64
+	for idx, bc := range scannedBarcodes {
+		match, err := db.SearchCatalogForScanner(posConn, cfg.PosDBPath, "", bc, 20)
+		if err != nil || match == nil || match.ExactBarcodeMatch == nil {
+			t.Fatalf("barcode %q lookup failed (idx=%d): match=%+v err=%v", bc, idx, match, err)
+		}
+		p := match.ExactBarcodeMatch
+		qty := 1.0
+		if p.ID == 1 {
+			qty = 3.0 // 3 units of Arroz to verify NetStockQuantity subtraction
+		}
+		unitPrice := int64(p.Price)
+		items = append(items, accounts.MovementItemInput{
+			AroniumProductID:  p.ID,
+			Barcode:           bc,
+			NameSnapshot:      p.Name,
+			UnitPriceSnapshot: unitPrice,
+			Quantity:          qty,
+		})
+		expectedTotal += int64(float64(unitPrice) * qty)
+	}
+	// expectedTotal = 3*4500 + 11000 + 4200 + 16500 + 28000 + 6000 + 7000 + 8000 + 9000 + 10000 = 113200
+	if expectedTotal != 113200 {
+		t.Fatalf("unexpected fixture sum %d", expectedTotal)
+	}
+
+	created, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		ID:            "1020304050",
+		Name:          "Carlos Mendoza",
+		Phone:         "3105559988",
+		PaymentMethod: "Efectivo",
+		CreditLimit:   150000,
+		Description:   "Cliente corporativo con corte quincenal",
+		StrictLimit:   true,
+		Items:         items,
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateAccountWithItems failed: %v", err)
+	}
+	if created.CurrentBalance != expectedTotal || created.CreditLimit != 150000 || created.Phone != "3105559988" {
+		t.Fatalf("unexpected created account summary: %+v", created)
+	}
+
+	// 2. Price Drift Isolation: Double Arroz & Aceite prices in pos.db AFTER transaction
+	time.Sleep(25 * time.Millisecond)
+	wConn2, err := testutil.OpenWritablePosDB(cfg.PosDBPath)
+	if err != nil {
+		t.Fatalf("re-open pos.db writable for price drift check: %v", err)
+	}
+	if _, err := wConn2.Exec(`UPDATE Product SET Price = 9900 WHERE Id = 1; UPDATE Product SET Price = 25000 WHERE Id = 2;`); err != nil {
+		t.Fatalf("update pos.db prices: %v", err)
+	}
+	_ = wConn2.Close()
+
+	liveMatch, err := db.SearchCatalogForScanner(posConn, cfg.PosDBPath, "", "7701234500011", 5)
+	if err != nil || liveMatch.ExactBarcodeMatch == nil || liveMatch.ExactBarcodeMatch.Price != 9900 {
+		t.Fatalf("expected live scanner cache to reflect new pos.db price 9900, got %+v (err=%v)", liveMatch, err)
+	}
+
+	reloadedAcc, err := accMgr.GetAccount("1020304050")
+	if err != nil {
+		t.Fatalf("GetAccount failed: %v", err)
+	}
+	if reloadedAcc.CurrentBalance != expectedTotal {
+		t.Fatalf("frozen snapshot violated! balance drifted from %d to %d after pos.db price change", expectedTotal, reloadedAcc.CurrentBalance)
+	}
+	if len(reloadedAcc.Movements) != 1 || len(reloadedAcc.Movements[0].Items) != 10 {
+		t.Fatalf("expected 1 movement with 10 frozen items, got %+v", reloadedAcc.Movements)
+	}
+	for _, it := range reloadedAcc.Movements[0].Items {
+		if it.AroniumProductID == 1 && it.UnitPriceSnapshot != 4500 {
+			t.Fatalf("expected frozen unit price 4500 for product 1, got %d", it.UnitPriceSnapshot)
+		}
+		if it.AroniumProductID == 2 && it.UnitPriceSnapshot != 11000 {
+			t.Fatalf("expected frozen unit price 11000 for product 2, got %d", it.UnitPriceSnapshot)
+		}
+	}
+
+	// 3. Strict Credit Limit Policy blocks charge exceeding available credit (limit 150000 - balance 113200 = 36800 available)
+	_, limitErr := accMgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "1020304050",
+		Type:          accounts.MovementCharge,
+		Amount:        40000,
+		PaymentMethod: "Efectivo",
+		Note:          "Cargo sobre tope",
+		StrictLimit:   true,
+	})
+	if limitErr == nil {
+		t.Fatalf("expected strict credit limit error when charging 40000 over 36800 available")
+	}
+
+	// 4. Net Inventory Calculation: Stock_Aronium - Committed_In_Cuentas (Ruta A)
+	invEng := inventory.NewEngine(cfg, posConn, stateConn)
+	invRep, err := invEng.BuildReport(30)
+	if err != nil {
+		t.Fatalf("inventory BuildReport failed: %v", err)
+	}
+	var foundProduct1 bool
+	for _, item := range invRep.Items {
+		if item.ProductID == 1 {
+			foundProduct1 = true
+			if item.AroniumStock != 45 || item.CommittedInAccountsQty != 3 || item.NetStockQuantity != 42 {
+				t.Fatalf("unexpected Net Inventory for product 1: AroniumStock=%.2f Committed=%.2f Net=%.2f",
+					item.AroniumStock, item.CommittedInAccountsQty, item.NetStockQuantity)
+			}
+		}
+	}
+	if !foundProduct1 {
+		t.Fatalf("product 1 not found in InventoryReport")
+	}
+
+	// 5. Partial Payment (ABONO) in cuentas.db must NEVER touch pos.db Document/Payment/Stock tables
+	afterPay, err := accMgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "1020304050",
+		Type:          accounts.MovementPayment,
+		Amount:        50000,
+		PaymentMethod: "Transferencia",
+		Note:          "Abono quincenal",
+	})
+	if err != nil {
+		t.Fatalf("RecordMovement ABONO failed: %v", err)
+	}
+	if afterPay.CurrentBalance != expectedTotal-50000 {
+		t.Fatalf("expected balance %d after 50000 abono, got %d", expectedTotal-50000, afterPay.CurrentBalance)
+	}
+
+	var docCountAfter, payCountAfter int
+	var stock1After float64
+	_ = posConn.QueryRow(`SELECT COUNT(*) FROM Document;`).Scan(&docCountAfter)
+	_ = posConn.QueryRow(`SELECT COUNT(*) FROM Payment;`).Scan(&payCountAfter)
+	_ = posConn.QueryRow(`SELECT Quantity FROM Stock WHERE ProductId = 1;`).Scan(&stock1After)
+	if docCountAfter != initialDocCount || payCountAfter != initialPayCount || stock1After != 45 {
+		t.Fatalf("pos.db was unexpectedly mutated! docs=%d/%d pays=%d/%d stock1=%.2f/45",
+			docCountAfter, initialDocCount, payCountAfter, initialPayCount, stock1After)
+	}
+
+	// 6. Google Drive Sync exports 4-tab XLSX (Cuentas, Movimientos, Detalle_Articulos, Inventario_Neto) + VACUUM INTO backup
+	mockGoogle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/drive/v3/files"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "drive_acc_file_1"})
+		case strings.Contains(r.URL.Path, "/values:batchUpdate"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"totalUpdatedCells": 200})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockGoogle.Close()
+
+	driveMgr := gosync.NewDriveManager(cfg, posConn, stateConn)
+	driveMgr.UploadEndpoint = mockGoogle.URL + "/upload/drive/v3"
+	driveMgr.SheetsEndpoint = mockGoogle.URL + "/v4/spreadsheets"
+	_ = driveMgr.SaveToken(&gosync.OAuthToken{
+		AccessToken: "ya29.test_accounts_sync",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	})
+
+	syncRes, err := driveMgr.SyncAll(context.Background())
+	if err != nil {
+		t.Fatalf("DriveManager.SyncAll failed: %v", err)
+	}
+
+	zr, err := zip.OpenReader(syncRes.MasterWorkbookPath)
+	if err != nil {
+		t.Fatalf("open MasterWorkbookPath zip: %v", err)
+	}
+	defer zr.Close()
+	var workbookXML string
+	for _, f := range zr.File {
+		if f.Name == "xl/workbook.xml" {
+			rc, _ := f.Open()
+			b, _ := io.ReadAll(rc)
+			_ = rc.Close()
+			workbookXML = string(b)
+		}
+	}
+	for _, tab := range []string{"Cuentas", "Movimientos", "Detalle_Articulos", "Inventario_Neto"} {
+		if !strings.Contains(workbookXML, tab) {
+			t.Fatalf("expected sheet tab %q in xl/workbook.xml, got: %s", tab, workbookXML)
+		}
+	}
+
+	var backupDBFound string
+	_ = filepath.WalkDir(cfg.GoogleDrive.LocalDriveSyncDir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.EqualFold(d.Name(), "cuentas_backup.db") {
+			backupDBFound = path
+		}
+		return nil
+	})
+	if backupDBFound == "" {
+		t.Fatalf("expected VACUUM INTO cuentas_backup.db inside %s", cfg.GoogleDrive.LocalDriveSyncDir)
+	}
+	bakMgr, err := accounts.NewManager(backupDBFound)
+	if err != nil {
+		t.Fatalf("open backed-up cuentas_backup.db: %v", err)
+	}
+	defer bakMgr.Close()
+	bakAcc, err := bakMgr.GetAccount("1020304050")
+	if err != nil || bakAcc.CurrentBalance != expectedTotal-50000 {
+		t.Fatalf("expected backed-up account balance %d, got %+v (err=%v)", expectedTotal-50000, bakAcc, err)
 	}
 }

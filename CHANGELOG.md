@@ -2,6 +2,27 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [1.2.0] — 2026-11-21
+
+### Added
+- **Dual-Database Architecture (`pos.db` Read-Only + `cuentas.db` WAL Ledger — Ruta A):**
+  - Preserves Aronium Lite's daily cash register closing by isolating customer credit accounts, charges (`CARGO`), partial/full payments (`ABONO`), and adjustments (`AJUSTE`) inside a dedicated SQLite WAL database (`%LOCALAPPDATA%\AroniumUtility\cuentas.db`) created automatically on setup/init.
+  - Strictly preserves `pos.db` as read-only (`mode=ro`) for live product catalog, multi-barcode joins (`GROUP_CONCAT`), and stock queries.
+  - Freezes product names and integer unit prices (`movimiento_items`) at transaction time so later price edits in Aronium never alter existing customer balances.
+- **Zero-Technical UI Experience (`Modo Básico` vs. `Modo Avanzado`) & Dedicated Account Builder:**
+  - Top header mode toggle defaulting to **`Modo Básico`** for non-technical store clerks, with **`Modo Avanzado`** exposing system diagnostics, multi-station hub, and hot encrypted backups.
+  - Automatic detection of `pos.db` and `cuentas.db`, friendly non-technical warning banner when `pos.db` is missing, and interactive OS file-picker modal (`aronium-util config pick-db`).
+  - Dedicated **"Crear Cuenta / Anotar Artículos"** workspace capturing `id`, `nombre`, `telefono`, `metodo_pago`, `tope_credito`, and `descripcion`, plus optional HID barcode scanner field (`Enter` increments `+1` and retains focus) backed by an `mtime`-cached live catalog search from `pos.db`.
+- **Net Inventory & 4-Tab Google Drive Workbook + Hot Ledger Backup:**
+  - Real-time Net Stock computation (`Stock_Neto = Stock_Aronium - Unidades_Pendientes_En_Cuentas`) surfaced across the UI, CLI, and Google Drive reports.
+  - Updated Master `.xlsx` & Google Sheets export with 4 consolidated sheets (`Cuentas`, `Movimientos`, `Detalle_Articulos`, `Inventario_Neto`), per-customer `.xlsx`/`.csv`/`.txt` statements, and `VACUUM INTO` hot backup (`cuentas_backup.db`).
+- **Windows App Icon, PE Metadata, Startup Shortcut & SHA-256 Authenticode Signing:**
+  - Embedded multi-resolution icon (`docs/assets/app-icon.ico`), `VS_VERSION_INFO` (v1.2.0.0), and `asInvoker` manifest via pure-Go COFF `.syso` generator (`Scripts/gen_winres.go`).
+  - Switched Windows boot auto-start (`aronium-util service install`) from `HKCU\...\CurrentVersion\Run` to a standard Windows Startup Folder `.lnk` shortcut (`Aronium Utility Watcher.lnk`) and removed binary symbol stripping (`-s -w`) on Windows builds to minimize false-positive antivirus alerts.
+  - Added SHA-256 Authenticode code-signing (`osslsigncode`) and bundled `AroniumUtility-CodeSigning.cer` in releases.
+
+---
+
 ## [1.1.0] — 2026-11-19
 
 ### Added

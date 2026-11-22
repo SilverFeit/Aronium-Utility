@@ -3,9 +3,11 @@ package inventory
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
 )
@@ -20,25 +22,28 @@ const (
 	StatusNegative ItemStatus = "STOCK_NEGATIVO"
 )
 
-// InventoryItem represents an enriched product inventory record (TODO-022).
+// InventoryItem represents an enriched product inventory record (TODO-022, TODO-104).
 type InventoryItem struct {
-	ProductID        int64      `json:"product_id"`
-	Code             string     `json:"code"`
-	Barcode          string     `json:"barcode"`
-	Name             string     `json:"name"`
-	Category         string     `json:"category"`
-	MeasurementUnit  string     `json:"measurement_unit"`
-	StockQuantity    float64    `json:"stock_quantity"`
-	MinStock         float64    `json:"min_stock"`
-	Cost             float64    `json:"cost"`
-	SalePrice        float64    `json:"sale_price"`
-	TotalCostValue   float64    `json:"total_cost_value"`
-	TotalRetailValue float64    `json:"total_retail_value"`
-	EstimatedMargin  float64    `json:"estimated_margin_pct"`
-	Status           ItemStatus `json:"status"`
-	ExpirationDate   string     `json:"expiration_date,omitempty"`
-	DaysToExpire     int        `json:"days_to_expire,omitempty"`
-	BatchLot         string     `json:"batch_lot,omitempty"`
+	ProductID              int64      `json:"product_id"`
+	Code                   string     `json:"code"`
+	Barcode                string     `json:"barcode"`
+	Name                   string     `json:"name"`
+	Category               string     `json:"category"`
+	MeasurementUnit        string     `json:"measurement_unit"`
+	StockQuantity          float64    `json:"stock_quantity"`
+	AroniumStock           float64    `json:"aronium_stock"`
+	CommittedInAccountsQty float64    `json:"committed_in_accounts_qty"`
+	NetStockQuantity       float64    `json:"net_stock_quantity"`
+	MinStock               float64    `json:"min_stock"`
+	Cost                   float64    `json:"cost"`
+	SalePrice              float64    `json:"sale_price"`
+	TotalCostValue         float64    `json:"total_cost_value"`
+	TotalRetailValue       float64    `json:"total_retail_value"`
+	EstimatedMargin        float64    `json:"estimated_margin_pct"`
+	Status                 ItemStatus `json:"status"`
+	ExpirationDate         string     `json:"expiration_date,omitempty"`
+	DaysToExpire           int        `json:"days_to_expire,omitempty"`
+	BatchLot               string     `json:"batch_lot,omitempty"`
 }
 
 // InventoryReport summarizes store-wide stock valuation, alerts, and items.
@@ -105,11 +110,23 @@ type expMeta struct {
 	MinStock float64
 }
 
-// BuildReport compiles the full live inventory report with valuation, low/negative stock alerts, and expiration warnings (TODO-022..024, TODO-048).
+// BuildReport compiles the full live inventory report with net stock (Stock_Aronium - Unidades_En_Cuentas), valuation, and alerts (TODO-022..024, TODO-104).
 func (e *Engine) BuildReport(maxExpireDays int) (*InventoryReport, error) {
 	products, err := db.ListProductsWithStock(e.PosDB)
 	if err != nil {
 		return nil, err
+	}
+
+	committedUnits := make(map[int64]float64)
+	if e.Cfg != nil && strings.TrimSpace(e.Cfg.AccountsDBPath) != "" {
+		if _, err := os.Stat(e.Cfg.AccountsDBPath); err == nil {
+			if accMgr, err := accounts.NewManager(e.Cfg.AccountsDBPath); err == nil {
+				if cu, err := accMgr.ComputePendingUnitsByProduct(); err == nil {
+					committedUnits = cu
+				}
+				_ = accMgr.Close()
+			}
+		}
 	}
 
 	expMap := make(map[int64]expMeta)
@@ -147,24 +164,27 @@ func (e *Engine) BuildReport(maxExpireDays int) (*InventoryReport, error) {
 			}
 		}
 
+		committedQty := committedUnits[p.ID]
+		netQty := p.StockQuantity - committedQty
+
 		status := StatusOK
 		switch {
-		case p.StockQuantity < 0:
+		case netQty < 0:
 			status = StatusNegative
 			rep.NegativeCount++
-		case p.StockQuantity == 0 && !p.IsService:
+		case netQty == 0 && !p.IsService:
 			status = StatusOut
 			rep.OutOfStockCount++
-		case p.StockQuantity <= minStock && !p.IsService:
+		case netQty <= minStock && !p.IsService:
 			status = StatusLowStock
 			rep.LowStockCount++
 		}
 
 		costVal := 0.0
 		retailVal := 0.0
-		if p.StockQuantity > 0 {
-			costVal = p.StockQuantity * p.Cost
-			retailVal = p.StockQuantity * p.Price
+		if netQty > 0 {
+			costVal = netQty * p.Cost
+			retailVal = netQty * p.Price
 		}
 		margin := 0.0
 		if p.Price > 0 && p.Cost > 0 {
@@ -183,29 +203,32 @@ func (e *Engine) BuildReport(maxExpireDays int) (*InventoryReport, error) {
 		}
 
 		item := InventoryItem{
-			ProductID:        p.ID,
-			Code:             p.Code,
-			Barcode:          p.Barcode,
-			Name:             p.Name,
-			Category:         p.ProductGroupName,
-			MeasurementUnit:  p.MeasurementUnit,
-			StockQuantity:    p.StockQuantity,
-			MinStock:         minStock,
-			Cost:             p.Cost,
-			SalePrice:        p.Price,
-			TotalCostValue:   costVal,
-			TotalRetailValue: retailVal,
-			EstimatedMargin:  margin,
-			Status:           status,
-			ExpirationDate:   expDate,
-			DaysToExpire:     daysToExpire,
-			BatchLot:         batch,
+			ProductID:              p.ID,
+			Code:                   p.Code,
+			Barcode:                p.Barcode,
+			Name:                   p.Name,
+			Category:               p.ProductGroupName,
+			MeasurementUnit:        p.MeasurementUnit,
+			StockQuantity:          p.StockQuantity,
+			AroniumStock:           p.StockQuantity,
+			CommittedInAccountsQty: committedQty,
+			NetStockQuantity:       netQty,
+			MinStock:               minStock,
+			Cost:                   p.Cost,
+			SalePrice:              p.Price,
+			TotalCostValue:         costVal,
+			TotalRetailValue:       retailVal,
+			EstimatedMargin:        margin,
+			Status:                 status,
+			ExpirationDate:         expDate,
+			DaysToExpire:           daysToExpire,
+			BatchLot:               batch,
 		}
 
 		rep.Items = append(rep.Items, item)
 		rep.TotalProducts++
-		if p.StockQuantity > 0 {
-			rep.TotalUnits += p.StockQuantity
+		if netQty > 0 {
+			rep.TotalUnits += netQty
 		}
 		rep.TotalCostValue += costVal
 		rep.TotalRetailValue += retailVal

@@ -1,9 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { runAroniumCLI } from './lib/ipc';
   import type {
+    AccountMovementItemInput,
+    AccountsLedgerReport,
     BackupManifest,
-    CustomerCreditAccount,
+    CatalogProduct,
+    CatalogSearchResponse,
+    ConfigInfoResponse,
+    CustomerAccount,
     DailyClosingReport,
     DashboardSnapshot,
     DoctorReport,
@@ -13,30 +18,60 @@
     SyncResult,
   } from './lib/types';
 
-  type TabId = 'dashboard' | 'credit' | 'inventory' | 'registers' | 'drive' | 'doctor';
+  type UIMode = 'basic' | 'advanced';
+  type BasicTab = 'create' | 'accounts' | 'inventory' | 'setup';
+  type AdvTab = 'dashboard' | 'accounts' | 'inventory' | 'registers' | 'drive' | 'doctor';
 
-  let activeTab = $state<TabId>('dashboard');
+  let uiMode = $state<UIMode>('basic');
+  let basicTab = $state<BasicTab>('create');
+  let advTab = $state<AdvTab>('dashboard');
   let loading = $state(false);
   let toastMessage = $state('');
   let toastError = $state(false);
+  let showDbModal = $state(false);
 
-  // CLI JSON state models (100% populated from `aronium-util <cmd> --json`)
+  // Live CLI JSON data models
+  let configInfo = $state<ConfigInfoResponse | null>(null);
+  let doctor = $state<DoctorReport | null>(null);
+  let accountsReport = $state<AccountsLedgerReport | null>(null);
   let snapshot = $state<DashboardSnapshot | null>(null);
   let dailyReport = $state<DailyClosingReport | null>(null);
-  let doctor = $state<DoctorReport | null>(null);
   let driveStatus = $state<DriveStatus | null>(null);
   let kardexList = $state<KardexEntry[]>([]);
   let lastSyncResult = $state<SyncResult | null>(null);
   let lastBackup = $state<BackupManifest | null>(null);
   let serviceStatus = $state<{ status: string; log_path: string } | null>(null);
 
-  // Credit Account Form & Filters
-  let customerSearch = $state('');
-  let noteCustomerTarget = $state('');
-  let noteText = $state('');
-  let notePromiseDate = $state('');
-  let limitCustomerID = $state('');
-  let limitAmount = $state('');
+  // Database path selector inputs
+  let customPosDbPath = $state('');
+  let customAccountsDbPath = $state('');
+
+  // Create Account / Annotate Items Form (Modo Básico)
+  let accountActionMode = $state<'new' | 'existing'>('new');
+  let selectedExistingAccountId = $state('');
+  let formId = $state('');
+  let formName = $state('');
+  let formPhone = $state('');
+  let formPaymentMethod = $state('Efectivo');
+  let formCreditLimit = $state<number>(500000);
+  let formDescription = $state('');
+  let formMoveNote = $state('');
+  let allowOverLimitConfirm = $state(false);
+
+  // Barcode Scanner & Live Product Search (from pos.db)
+  let scannerInputEl = $state<HTMLInputElement | null>(null);
+  let scannerQuery = $state('');
+  let catalogMatches = $state<CatalogProduct[]>([]);
+  let catalogSearching = $state(false);
+  let cartItems = $state<AccountMovementItemInput[]>([]);
+
+  // Accounts list / Payment modal
+  let accountSearch = $state('');
+  let activePayAccount = $state<CustomerAccount | null>(null);
+  let payAmount = $state<number>(0);
+  let payMethod = $state('Efectivo');
+  let payNote = $state('Pago recibido en cuenta');
+  let expandedAccountId = $state<string>('');
   let selectedStatement = $state('');
   let selectedStatementCustomer = $state('');
 
@@ -44,9 +79,47 @@
   let invSearch = $state('');
   let invStatusFilter = $state<'ALL' | 'OK' | 'STOCK_BAJO' | 'AGOTADO' | 'STOCK_NEGATIVO'>('ALL');
   let invSubView = $state<'catalog' | 'kardex'>('catalog');
-
-  // Backup Passphrase
   let backupPassphrase = $state('');
+
+  let selectedExistingAccount = $derived(
+    (accountsReport?.cuentas || []).find((a) => a.id === selectedExistingAccountId) || null
+  );
+
+  let cartTotal = $derived(
+    cartItems.reduce(
+      (sum, it) => sum + Math.round((it.cantidad || 1) * (it.precio_unitario_snapshot || 0)),
+      0
+    )
+  );
+
+  let currentAccountBalance = $derived(
+    accountActionMode === 'existing' && selectedExistingAccount
+      ? selectedExistingAccount.saldo_actual
+      : (accountsReport?.cuentas || []).find((a) => a.id === formId.trim())?.saldo_actual || 0
+  );
+
+  let activeCreditLimit = $derived(
+    accountActionMode === 'existing' && selectedExistingAccount
+      ? selectedExistingAccount.tope_credito
+      : Number(formCreditLimit || 0)
+  );
+
+  let projectedBalance = $derived(currentAccountBalance + cartTotal);
+  let exceedsProjectedLimit = $derived(
+    activeCreditLimit > 0 && projectedBalance > activeCreditLimit
+  );
+  let limitUsagePct = $derived(
+    activeCreditLimit > 0 ? Math.min(100, (projectedBalance / activeCreditLimit) * 100) : 0
+  );
+
+  function setUIMode(mode: UIMode) {
+    uiMode = mode;
+    try {
+      localStorage.setItem('aronium_ui_mode', mode);
+    } catch {
+      // ignore storage errors
+    }
+  }
 
   function showToast(msg: string, isErr = false) {
     toastMessage = msg;
@@ -56,89 +129,367 @@
   async function refreshAll() {
     loading = true;
     try {
-      const [snap, daily, doc, drv, srv] = await Promise.all([
-        runAroniumCLI<DashboardSnapshot>(['admin', '--json']),
-        runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']),
+      const [cfgRes, docRes, accRes, drvRes, srvRes] = await Promise.all([
+        runAroniumCLI<ConfigInfoResponse>(['config', 'get', '--json']),
         runAroniumCLI<DoctorReport>(['doctor', '--json']),
+        runAroniumCLI<AccountsLedgerReport>(['accounts', 'list', '--json']),
         runAroniumCLI<DriveStatus>(['drive', 'status', '--json']),
         runAroniumCLI<{ status: string; log_path: string }>(['service', 'status', '--json']),
       ]);
-      snapshot = snap;
-      dailyReport = daily;
-      doctor = doc;
-      driveStatus = drv;
-      serviceStatus = srv;
-    } catch (e: any) {
-      showToast(`Error consultando CLI aronium-util: ${e?.message || e}`, true);
-    } finally {
-      loading = false;
-    }
-  }
 
-  async function loadKardex() {
-    try {
-      kardexList = await runAroniumCLI<KardexEntry[]>(['inventory', 'kardex', '--json']);
-    } catch (e: any) {
-      showToast(`Error cargando Kardex: ${e?.message || e}`, true);
-    }
-  }
+      configInfo = cfgRes;
+      doctor = docRes;
+      accountsReport = accRes;
+      driveStatus = drvRes;
+      serviceStatus = srvRes;
 
-  async function handleAddCreditNote() {
-    if (!noteCustomerTarget.trim() || !noteText.trim()) {
-      showToast('Ingresa el nombre o ID del cliente y la anotación de la cuenta.', true);
-      return;
-    }
-    loading = true;
-    try {
-      const args = ['credit', 'note', 'add'];
-      if (notePromiseDate.trim()) {
-        args.push('--promise', notePromiseDate.trim());
+      if (!customPosDbPath) customPosDbPath = cfgRes.config.pos_db_path;
+      if (!customAccountsDbPath) customAccountsDbPath = cfgRes.config.accounts_db_path;
+
+      if (docRes.pos_db_readable) {
+        const [snap, daily] = await Promise.all([
+          runAroniumCLI<DashboardSnapshot>(['admin', '--json']),
+          runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']),
+        ]);
+        snapshot = snap;
+        dailyReport = daily;
+
+        // Preload initial catalog matches so products appear immediately
+        await searchCatalog('');
+      } else {
+        snapshot = null;
+        dailyReport = null;
+        catalogMatches = [];
       }
-      args.push('--json', noteCustomerTarget.trim(), noteText.trim());
-      await runAroniumCLI(args);
-
-      // Immediately sync updated customer account to Google Drive table via CLI
-      lastSyncResult = await runAroniumCLI<SyncResult>(['sync', '--json']);
-      noteText = '';
-      await refreshAll();
-      showToast(`Anotación guardada para "${noteCustomerTarget}" y sincronizada en Google Drive.`);
     } catch (e: any) {
-      showToast(`Error guardando anotación: ${e?.message || e}`, true);
+      showToast(`No se pudo comunicar con el motor aronium-util: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
   }
 
-  async function handleSetCreditLimit() {
-    if (!limitCustomerID.trim() || !limitAmount.trim()) {
-      showToast('Ingresa el ID del cliente y el nuevo límite de crédito.', true);
+  async function searchCatalog(queryText: string) {
+    if (!doctor?.pos_db_readable) return;
+    catalogSearching = true;
+    try {
+      const res = await runAroniumCLI<CatalogSearchResponse>([
+        'catalog',
+        'search',
+        '--query',
+        queryText,
+        '--limit',
+        '30',
+        '--json',
+      ]);
+      catalogMatches = res.matches || [];
+    } catch {
+      // ignore transient search errors
+    } finally {
+      catalogSearching = false;
+    }
+  }
+
+  function addProductToCart(prod: CatalogProduct) {
+    const unitPrice = Math.round(prod.price);
+    const existingIdx = cartItems.findIndex(
+      (it) => it.aronium_product_id === prod.id && it.precio_unitario_snapshot === unitPrice
+    );
+    if (existingIdx >= 0) {
+      cartItems[existingIdx] = {
+        ...cartItems[existingIdx],
+        cantidad: Number(cartItems[existingIdx].cantidad) + 1,
+      };
+      cartItems = [...cartItems];
+    } else {
+      cartItems = [
+        ...cartItems,
+        {
+          aronium_product_id: prod.id,
+          codigo_barras: prod.barcode || prod.code || '',
+          nombre_snapshot: prod.name,
+          precio_unitario_snapshot: unitPrice,
+          cantidad: 1,
+        },
+      ];
+    }
+  }
+
+  async function handleScannerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const rawCode = scannerQuery.trim();
+    if (!rawCode) return;
+
+    if (!doctor?.pos_db_readable) {
+      showToast(
+        'Primero conecta el archivo pos.db de Aronium para buscar productos por código de barras.',
+        true
+      );
+      return;
+    }
+
+    try {
+      const res = await runAroniumCLI<CatalogSearchResponse>([
+        'catalog',
+        'search',
+        '--barcode',
+        rawCode,
+        '--query',
+        rawCode,
+        '--limit',
+        '15',
+        '--json',
+      ]);
+
+      if (res.exact_match) {
+        addProductToCart(res.exact_match);
+        scannerQuery = '';
+        await searchCatalog('');
+        showToast(`+1 "${res.exact_match.name}" agregado ($${Math.round(res.exact_match.price).toLocaleString()})`);
+      } else if (res.matches && res.matches.length === 1) {
+        addProductToCart(res.matches[0]);
+        scannerQuery = '';
+        await searchCatalog('');
+        showToast(`+1 "${res.matches[0].name}" agregado`);
+      } else {
+        catalogMatches = res.matches || [];
+        if (catalogMatches.length === 0) {
+          showToast(`No encontramos ningún producto con código o nombre "${rawCode}" en Aronium.`, true);
+        }
+      }
+    } catch (e: any) {
+      showToast(`Error buscando código "${rawCode}": ${e?.message || e}`, true);
+    } finally {
+      await tick();
+      scannerInputEl?.focus();
+    }
+  }
+
+  function updateItemQty(index: number, delta: number) {
+    const nextQty = Number(cartItems[index].cantidad) + delta;
+    if (nextQty <= 0) {
+      cartItems = cartItems.filter((_, i) => i !== index);
+      return;
+    }
+    cartItems[index] = { ...cartItems[index], cantidad: nextQty };
+    cartItems = [...cartItems];
+  }
+
+  function selectExistingAccountForCharge(acc: CustomerAccount) {
+    accountActionMode = 'existing';
+    selectedExistingAccountId = acc.id;
+    formId = acc.id;
+    formName = acc.nombre;
+    formPhone = acc.telefono;
+    formPaymentMethod = acc.metodo_pago;
+    formCreditLimit = acc.tope_credito;
+    formDescription = acc.descripcion;
+    allowOverLimitConfirm = false;
+  }
+
+  async function handleSaveAccountAndItems() {
+    if (accountActionMode === 'new') {
+      if (!formId.trim() || !formName.trim() || !formPhone.trim() || !formDescription.trim()) {
+        showToast(
+          'Por favor completa ID, Nombre, Teléfono, Método de Pago, Tope de Crédito y Descripción.',
+          true
+        );
+        return;
+      }
+    } else if (!selectedExistingAccountId.trim()) {
+      showToast('Selecciona la cuenta del cliente a la que deseas anotar artículos.', true);
+      return;
+    }
+
+    if (exceedsProjectedLimit && !allowOverLimitConfirm) {
+      showToast(
+        `El saldo proyectado ($${projectedBalance.toLocaleString()}) supera el tope de crédito ($${activeCreditLimit.toLocaleString()}). Marca la casilla de confirmación si deseas autorizarlo.`,
+        true
+      );
+      return;
+    }
+
+    loading = true;
+    try {
+      if (accountActionMode === 'new') {
+        const args = [
+          'accounts',
+          'create',
+          '--id',
+          formId.trim(),
+          '--name',
+          formName.trim(),
+          '--phone',
+          formPhone.trim(),
+          '--payment-method',
+          formPaymentMethod,
+          '--limit',
+          String(Math.round(Number(formCreditLimit || 0))),
+          '--description',
+          formDescription.trim(),
+        ];
+        if (formMoveNote.trim()) {
+          args.push('--note', formMoveNote.trim());
+        }
+        if (cartItems.length > 0) {
+          args.push('--items-json', JSON.stringify(cartItems));
+        }
+        args.push('--json');
+        await runAroniumCLI(args);
+        showToast(
+          `¡Cuenta "${formName.trim()}" guardada en cuentas.db${cartItems.length > 0 ? ` con ${cartItems.length} artículo(s)` : ''} y sincronizada con Google Drive!`
+        );
+      } else {
+        if (cartItems.length === 0) {
+          showToast('Escanea o agrega al menos un artículo para anotar en la cuenta.', true);
+          loading = false;
+          return;
+        }
+        const args = [
+          'accounts',
+          'charge',
+          '--account-id',
+          selectedExistingAccountId,
+          '--items-json',
+          JSON.stringify(cartItems),
+          '--payment-method',
+          formPaymentMethod,
+          '--note',
+          formMoveNote.trim() || `Anotación de ${cartItems.length} artículo(s)`,
+          '--json',
+        ];
+        await runAroniumCLI(args);
+        showToast(
+          `¡Artículos anotados a la cuenta de ${selectedExistingAccount?.nombre} y sincronizados con Google Drive!`
+        );
+      }
+
+      cartItems = [];
+      formMoveNote = '';
+      allowOverLimitConfirm = false;
+      if (accountActionMode === 'new') {
+        formId = '';
+        formName = '';
+        formPhone = '';
+        formDescription = '';
+      }
+      await refreshAll();
+      await tick();
+      scannerInputEl?.focus();
+    } catch (e: any) {
+      showToast(`Error guardando cuenta: ${e?.message || e}`, true);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handleRecordPayment() {
+    if (!activePayAccount || !payAmount || payAmount <= 0) {
+      showToast('Ingresa un monto de pago válido mayor a 0.', true);
       return;
     }
     loading = true;
     try {
-      await runAroniumCLI(['credit', 'limit', '--json', limitCustomerID.trim(), limitAmount.trim()]);
+      await runAroniumCLI([
+        'accounts',
+        'pay',
+        '--account-id',
+        activePayAccount.id,
+        '--amount',
+        String(Math.round(payAmount)),
+        '--payment-method',
+        payMethod,
+        '--note',
+        payNote.trim() || 'Abono / pago en cuenta de cliente',
+        '--json',
+      ]);
+      const paidCustomer = activePayAccount.nombre;
+      activePayAccount = null;
+      payAmount = 0;
       await refreshAll();
-      showToast(`Límite de crédito actualizado para el cliente #${limitCustomerID}.`);
+      showToast(
+        `¡Pago registrado para ${paidCustomer} en cuentas.db y sincronizado con Google Drive (el cierre diario de Aronium no fue alterado)!`
+      );
     } catch (e: any) {
-      showToast(`Error actualizando límite: ${e?.message || e}`, true);
+      showToast(`Error registrando pago: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
   }
 
-  async function handleViewStatement(customerName: string) {
+  async function handleViewStatement(accountId: string, customerName: string) {
     loading = true;
     try {
       const res = await runAroniumCLI<{ statement: string }>([
-        'credit',
+        'accounts',
         'statement',
+        '--account-id',
+        accountId,
         '--json',
-        customerName,
       ]);
       selectedStatementCustomer = customerName;
       selectedStatement = res.statement;
     } catch (e: any) {
-      showToast(`Error generando estado de cuenta: ${e?.message || e}`, true);
+      showToast(`Error generando recibo de cuenta: ${e?.message || e}`, true);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handlePickDatabase(kind: 'pos' | 'accounts') {
+    try {
+      const res = await runAroniumCLI<{ selected: boolean; path: string }>([
+        'config',
+        'pick-db',
+        '--kind',
+        kind,
+        '--json',
+      ]);
+      if (res.selected && res.path) {
+        if (kind === 'pos') {
+          customPosDbPath = res.path;
+        } else {
+          customAccountsDbPath = res.path;
+        }
+        await handleSaveDatabasePaths(false, false);
+      }
+    } catch (e: any) {
+      showToast(`No se pudo abrir el selector gráfico: ${e?.message || e}. Puedes pegar la ruta manualmente.`, true);
+    }
+  }
+
+  async function handleSaveDatabasePaths(useDefaultPos = false, createDemoPos = false) {
+    loading = true;
+    try {
+      const args = ['config', 'set-db'];
+      if (useDefaultPos) {
+        args.push('--use-default-pos');
+      } else if (customPosDbPath.trim()) {
+        args.push('--set-pos-db', customPosDbPath.trim());
+      }
+      if (customAccountsDbPath.trim()) {
+        args.push('--set-accounts-db', customAccountsDbPath.trim());
+      }
+      if (createDemoPos) {
+        args.push('--create-demo-pos');
+      }
+      args.push('--json');
+
+      const res = await runAroniumCLI<{ config: any; doctor: DoctorReport }>(args);
+      customPosDbPath = res.config.pos_db_path;
+      customAccountsDbPath = res.config.accounts_db_path;
+      showDbModal = false;
+      await refreshAll();
+      if (res.doctor?.pos_db_readable) {
+        showToast('¡Bases de datos conectadas correctamente!');
+      } else {
+        showToast(
+          'Se guardó la ruta, pero aún no encontramos el archivo de Aronium (pos.db) en esa ubicación.',
+          true
+        );
+      }
+    } catch (e: any) {
+      showToast(`Error configurando bases de datos: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
@@ -149,9 +500,7 @@
     try {
       lastSyncResult = await runAroniumCLI<SyncResult>(['sync', '--json']);
       await refreshAll();
-      showToast(
-        `Sincronización completada: ${lastSyncResult.master_workbook_path} (${lastSyncResult.customer_files?.length || 0} cuentas de clientes).`
-      );
+      showToast(`Sincronización completa guardada en: ${lastSyncResult.master_workbook_path}`);
     } catch (e: any) {
       showToast(`Error sincronizando con Google Drive: ${e?.message || e}`, true);
     } finally {
@@ -160,13 +509,22 @@
   }
 
   async function handleDriveWebLogin() {
-    showToast('Abriendo navegador para autenticación OAuth 2.0 con Google Drive...');
+    showToast('Abriendo tu navegador web para iniciar sesión con Google Drive...');
     try {
       await runAroniumCLI(['drive', 'login', '--timeout', '120', '--json']);
       await refreshAll();
-      showToast('¡Google Drive vinculado exitosamente!');
+      showToast('¡Tu cuenta de Google Drive quedó conectada exitosamente!');
     } catch (e: any) {
-      showToast(`Autenticación web en espera o finalizada: ${e?.message || e}`, true);
+      showToast(`Autenticación web pendiente o cancelada: ${e?.message || e}`, true);
+    }
+  }
+
+  async function loadKardex() {
+    if (!doctor?.pos_db_readable) return;
+    try {
+      kardexList = await runAroniumCLI<KardexEntry[]>(['inventory', 'kardex', '--json']);
+    } catch (e: any) {
+      showToast(`Error cargando Kardex: ${e?.message || e}`, true);
     }
   }
 
@@ -178,9 +536,9 @@
         args.push('--passphrase', backupPassphrase.trim());
       }
       lastBackup = await runAroniumCLI<BackupManifest>(args);
-      showToast(`Respaldo en caliente creado: ${lastBackup.archive_path}`);
+      showToast(`Copia de seguridad creada en: ${lastBackup.archive_path}`);
     } catch (e: any) {
-      showToast(`Error creando respaldo: ${e?.message || e}`, true);
+      showToast(`Error creando copia de seguridad: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
@@ -193,28 +551,37 @@
       await refreshAll();
       showToast(`Inicio automático configurado: ${res.result}`);
     } catch (e: any) {
-      showToast(`Error registrando servicio: ${e?.message || e}`, true);
+      showToast(`Error registrando inicio automático: ${e?.message || e}`, true);
     } finally {
       loading = false;
     }
   }
 
+  function friendlyStockStatus(status: string): string {
+    if (status === 'OK') return 'Disponible';
+    if (status === 'STOCK_BAJO') return 'Stock Bajo';
+    if (status === 'AGOTADO') return 'Agotado';
+    if (status === 'STOCK_NEGATIVO') return 'Stock Negativo';
+    return status;
+  }
+
   function statusBadgeClass(status: string): string {
-    if (status === 'OK' || status === 'AL_DIA' || status === 'PAGADO') return 'badge badge-ok';
+    if (status === 'OK' || status === 'ACTIVA' || status === 'AL_DIA' || status === 'PAGADO')
+      return 'badge badge-ok';
     if (status === 'STOCK_BAJO' || status === 'PENDIENTE' || status === 'ABONADO_PARCIAL')
       return 'badge badge-warn';
     return 'badge badge-danger';
   }
 
-  function filteredAccounts(): CustomerCreditAccount[] {
-    const list = snapshot?.credit_portfolio?.accounts || [];
-    const q = customerSearch.trim().toLowerCase();
+  function filteredAccounts(): CustomerAccount[] {
+    const list = accountsReport?.cuentas || [];
+    const q = accountSearch.trim().toLowerCase();
     if (!q) return list;
     return list.filter(
       (a) =>
-        a.customer_name.toLowerCase().includes(q) ||
-        String(a.customer_id) === q ||
-        (a.phone_number && a.phone_number.toLowerCase().includes(q))
+        a.nombre.toLowerCase().includes(q) ||
+        a.id.toLowerCase().includes(q) ||
+        (a.telefono && a.telefono.toLowerCase().includes(q))
     );
   }
 
@@ -234,721 +601,1155 @@
   }
 
   onMount(() => {
+    try {
+      const savedMode = localStorage.getItem('aronium_ui_mode');
+      if (savedMode === 'basic' || savedMode === 'advanced') {
+        uiMode = savedMode;
+      }
+    } catch {
+      // ignore
+    }
     refreshAll();
   });
 </script>
 
-<div class="layout">
-  <!-- Left Navigation Sidebar -->
-  <aside class="sidebar">
-    <div>
-      <div class="brand">
-        <div class="brand-icon">AU</div>
-        <div>
-          <div class="brand-title">Aronium Utility UI</div>
-          <div class="brand-sub">Tauri 2 + Svelte + Go CLI</div>
-        </div>
-      </div>
-
-      <button
-        class="nav-btn {activeTab === 'dashboard' ? 'active' : ''}"
-        onclick={() => (activeTab = 'dashboard')}
-      >
-        <span>1. Dashboard & Métricas</span>
-        <span>📊</span>
-      </button>
-
-      <button
-        class="nav-btn {activeTab === 'credit' ? 'active' : ''}"
-        onclick={() => (activeTab = 'credit')}
-      >
-        <span>2. Cuentas de Clientes</span>
-        <span>🧾</span>
-      </button>
-
-      <button
-        class="nav-btn {activeTab === 'inventory' ? 'active' : ''}"
-        onclick={() => {
-          activeTab = 'inventory';
-          loadKardex();
-        }}
-      >
-        <span>3. Inventario & Kardex</span>
-        <span>📦</span>
-      </button>
-
-      <button
-        class="nav-btn {activeTab === 'registers' ? 'active' : ''}"
-        onclick={() => (activeTab = 'registers')}
-      >
-        <span>4. Cajas Registradoras</span>
-        <span>🖥️</span>
-      </button>
-
-      <button
-        class="nav-btn {activeTab === 'drive' ? 'active' : ''}"
-        onclick={() => (activeTab = 'drive')}
-      >
-        <span>5. Google Drive & Backups</span>
-        <span>☁️</span>
-      </button>
-
-      <button
-        class="nav-btn {activeTab === 'doctor' ? 'active' : ''}"
-        onclick={() => (activeTab = 'doctor')}
-      >
-        <span>6. Diagnóstico & Servicio</span>
-        <span>🛡️</span>
-      </button>
-    </div>
-
-    <div class="card" style="margin-bottom: 0; padding: 14px;">
-      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
-        MOTOR SIDECAR GO CLI
-      </div>
-      <div style="font-size: 12.5px; font-weight: 700; color: var(--accent-green);">
-        ● {doctor?.healthy ? 'pos.db Conectado (RO)' : 'Verificando pos.db...'}
-      </div>
-      <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
-        Caja: <strong>{doctor?.cash_register_id || 'POS-01'}</strong>
-      </div>
-      <button
-        class="btn btn-green"
-        style="width: 100%; margin-top: 10px;"
-        disabled={loading}
-        onclick={handleSyncDrive}
-      >
-        Sincronizar Drive Ahora
-      </button>
-    </div>
-  </aside>
-
-  <!-- Right Main Content Area -->
-  <main class="main-area">
-    <header class="topbar">
+<div class="app-shell">
+  <!-- GLOBAL TOP HEADER WITH BASIC / ADVANCED SWITCH & DB STATUS -->
+  <header class="mode-header">
+    <div class="mode-brand">
+      <div class="brand-icon">AU</div>
       <div>
-        <h1 style="margin: 0; font-size: 22px;">
-          {snapshot?.store_name || 'Aronium Utility'} — Panel de Control Local
-        </h1>
-        <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">
-          Interfaz visual Tauri 2 + Svelte impulsada al 100% por el CLI en Go (<code>aronium-util</code>)
+        <div class="brand-title">Aronium Utility UI</div>
+        <div class="brand-sub">
+          {snapshot?.store_name || 'Gestión de Cuentas de Clientes & Inventario'}
         </div>
       </div>
-      <div style="display: flex; gap: 10px;">
-        <button class="btn btn-outline" disabled={loading} onclick={refreshAll}>
-          {loading ? 'Actualizando...' : 'Actualizar Datos'}
-        </button>
-        <button class="btn" disabled={loading} onclick={handleSyncDrive}>
-          Sincronizar Inventario y Cuentas
-        </button>
-      </div>
-    </header>
+    </div>
 
-    {#if toastMessage}
-      <div class="toast {toastError ? 'toast-err' : ''}">
+    <!-- Prominent Basic / Advanced Switch at the top -->
+    <div class="mode-switch-group" role="group" aria-label="Selector de Modo de Interfaz">
+      <button
+        class="mode-switch-btn {uiMode === 'basic' ? 'active-basic' : ''}"
+        onclick={() => setUIMode('basic')}
+      >
+        Modo Básico (Tienda)
+      </button>
+      <button
+        class="mode-switch-btn {uiMode === 'advanced' ? 'active-adv' : ''}"
+        onclick={() => setUIMode('advanced')}
+      >
+        Modo Avanzado (Técnico)
+      </button>
+    </div>
+
+    <div class="db-status-pills">
+      <span class={doctor?.pos_db_readable ? 'badge badge-ok' : 'badge badge-danger'}>
+        {doctor?.pos_db_readable ? '✓ Productos Aronium OK' : '⚠ Falta Base de Productos'}
+      </span>
+      <span class={doctor?.accounts_db_ready ? 'badge badge-ok' : 'badge badge-warn'}>
+        {doctor?.accounts_db_ready ? '✓ Base Cuentas Lista' : 'Base Cuentas Pendiente'}
+      </span>
+      <button class="btn btn-outline" style="padding: 6px 12px;" onclick={() => (showDbModal = !showDbModal)}>
+        Seleccionar Base de Datos
+      </button>
+    </div>
+  </header>
+
+  <!-- FRIENDLY NON-TECHNICAL ALERT IF pos.db IS NOT FOUND AT DEFAULT PATH -->
+  {#if doctor && !doctor.pos_db_readable}
+    <div style="padding: 14px 24px 0 24px;">
+      <div class="alert-banner">
+        <div style="flex: 1; min-width: 280px;">
+          <strong style="font-size: 14.5px;">
+            No encontramos la base de productos de Aronium en la ruta por defecto
+          </strong>
+          <div style="font-size: 13px; margin-top: 4px; color: #fef3c7;">
+            Buscamos en <code>{doctor.pos_db_path}</code>. Si Aronium está guardado en otra carpeta de tu PC,
+            haz clic en <strong>"Elegir archivo pos.db"</strong> para seleccionarlo y ver tus productos al
+            instante. Tus cuentas de clientes en <code>cuentas.db</code> ya están listas para usarse.
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-amber" onclick={() => handlePickDatabase('pos')}>
+            Elegir archivo pos.db en mi PC...
+          </button>
+          <button class="btn btn-outline" onclick={() => handleSaveDatabasePaths(true, false)}>
+            Reintentar Ruta por Defecto
+          </button>
+          <button class="btn btn-outline" onclick={() => handleSaveDatabasePaths(false, true)}>
+            Crear Base de Prueba
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- DATABASE SELECTOR DRAWER -->
+  {#if showDbModal}
+    <div style="padding: 14px 24px 0 24px;">
+      <div class="card" style="border-color: var(--accent-blue); margin-bottom: 10px;">
+        <div class="card-title">
+          <span>Configurar Bases de Datos (Productos de Aronium y Cuentas de Clientes)</span>
+          <button class="btn btn-outline" style="padding: 4px 10px;" onclick={() => (showDbModal = false)}>
+            Cerrar
+          </button>
+        </div>
+        <div class="panel-grid" style="margin-bottom: 10px;">
+          <div>
+            <label class="field-label">
+              Base de Productos de Aronium (pos.db — Solo Lectura)
+              <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <input class="input" bind:value={customPosDbPath} placeholder="C:\Users\...\AppData\Local\Aronium\Data\pos.db" />
+                <button class="btn btn-outline" onclick={() => handlePickDatabase('pos')}>Buscar...</button>
+              </div>
+            </label>
+          </div>
+          <div>
+            <label class="field-label">
+              Base Dedicada de Cuentas de Clientes (cuentas.db)
+              <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <input class="input" bind:value={customAccountsDbPath} placeholder="C:\Users\...\AppData\Local\AroniumUtility\cuentas.db" />
+                <button class="btn btn-outline" onclick={() => handlePickDatabase('accounts')}>Buscar...</button>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn btn-green" disabled={loading} onclick={() => handleSaveDatabasePaths(false, false)}>
+            Guardar y Conectar Bases de Datos
+          </button>
+          <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(true, false)}>
+            Usar Ruta por Defecto de Aronium
+          </button>
+          <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(false, true)}>
+            Crear Base de Productos de Prueba
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if toastMessage}
+    <div style="padding: 12px 24px 0 24px;">
+      <div class="toast {toastError ? 'toast-err' : ''}" style="margin-bottom: 0;">
         <span>{toastMessage}</span>
         <button class="btn btn-outline" style="padding: 4px 10px;" onclick={() => (toastMessage = '')}>
           Cerrar
         </button>
       </div>
-    {/if}
+    </div>
+  {/if}
 
-    <!-- TAB 1: DASHBOARD & METRICS -->
-    {#if activeTab === 'dashboard'}
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-label">Ventas Totales Consolidadas</div>
-          <div class="kpi-value">${(dailyReport?.total_sales || 0).toLocaleString()}</div>
-          <div class="kpi-sub">
-            {dailyReport?.total_transactions || 0} transacciones · Equivalente: {(
-              dailyReport?.total_sales_dual || 0
-            ).toFixed(2)}
-            {dailyReport?.dual_currency_code || 'EUR'}
-          </div>
-        </div>
+  <!-- ========================================================================= -->
+  <!-- MODO BÁSICO (PARA PERSONA CON CERO CONOCIMIENTO TÉCNICO)                   -->
+  <!-- ========================================================================= -->
+  {#if uiMode === 'basic'}
+    <div class="basic-container">
+      <nav class="basic-nav">
+        <button
+          class="basic-nav-btn {basicTab === 'create' ? 'active' : ''}"
+          onclick={async () => {
+            basicTab = 'create';
+            await tick();
+            scannerInputEl?.focus();
+          }}
+        >
+          <span>1. Crear Cuenta / Anotar Artículos</span>
+          <span>🛒</span>
+        </button>
 
-        <div class="kpi-card">
-          <div class="kpi-label">Cartera de Crédito Pendiente</div>
-          <div class="kpi-value" style="color: var(--accent-amber);">
-            ${(snapshot?.credit_portfolio?.total_pending_portfolio || 0).toLocaleString()}
-          </div>
-          <div class="kpi-sub">
-            {snapshot?.credit_portfolio?.active_debtor_count || 0} clientes con saldo ·
-            {snapshot?.credit_portfolio?.over_limit_count || 0} con límite excedido
-          </div>
-        </div>
+        <button
+          class="basic-nav-btn {basicTab === 'accounts' ? 'active' : ''}"
+          onclick={() => (basicTab = 'accounts')}
+        >
+          <span>2. Ver Cuentas y Registrar Pagos</span>
+          <span>💵</span>
+        </button>
 
-        <div class="kpi-card">
-          <div class="kpi-label">Valorización de Inventario (Venta)</div>
-          <div class="kpi-value" style="color: var(--accent-green);">
-            ${(snapshot?.inventory_summary?.total_retail_value || 0).toLocaleString()}
-          </div>
-          <div class="kpi-sub">
-            Costo: ${(snapshot?.inventory_summary?.total_cost_value || 0).toLocaleString()} ·
-            Productos: {snapshot?.inventory_summary?.total_products || 0}
-          </div>
-        </div>
+        <button
+          class="basic-nav-btn {basicTab === 'inventory' ? 'active' : ''}"
+          onclick={() => (basicTab = 'inventory')}
+        >
+          <span>3. Ver Inventario Real Disponible</span>
+          <span>📦</span>
+        </button>
 
-        <div class="kpi-card">
-          <div class="kpi-label">Alertas de Stock Activas</div>
-          <div class="kpi-value" style="color: var(--accent-red);">
-            {(snapshot?.inventory_summary?.low_stock_count || 0) +
-              (snapshot?.inventory_summary?.out_of_stock_count || 0) +
-              (snapshot?.inventory_summary?.negative_stock_count || 0)}
-          </div>
-          <div class="kpi-sub">
-            {snapshot?.inventory_summary?.low_stock_count || 0} stock bajo ·
-            {snapshot?.inventory_summary?.out_of_stock_count || 0} agotados
-          </div>
-        </div>
-      </div>
+        <button
+          class="basic-nav-btn {basicTab === 'setup' ? 'active' : ''}"
+          onclick={() => (basicTab = 'setup')}
+        >
+          <span>4. Google Drive y Respaldo</span>
+          <span>☁️</span>
+        </button>
+      </nav>
 
-      <div class="panel-grid">
-        <!-- Sales by Cash Register Visualization -->
-        <div class="card">
-          <h3 class="card-title">
-            <span>Ventas por Caja Registradora</span>
-            <span class="badge badge-ok">{snapshot?.sales_by_register?.length || 0} Cajas</span>
-          </h3>
-          {#each snapshot?.sales_by_register || [] as reg}
-            {@const maxSale = Math.max(
-              1,
-              ...(snapshot?.sales_by_register?.map((r) => r.total_sales) || [1])
-            )}
-            <div style="margin-bottom: 14px;">
+      <!-- BASIC TAB 1: CREATE ACCOUNT / ANNOTATE ITEMS WITH BARCODE SCANNER -->
+      {#if basicTab === 'create'}
+        <div class="panel-grid" style="grid-template-columns: 1.05fr 1.15fr; align-items: start;">
+          <!-- Left Card: Customer Account Form -->
+          <div class="card">
+            <div class="card-title">
+              <span>Datos de la Cuenta del Cliente</span>
+              <div style="display: flex; gap: 6px;">
+                <button
+                  class="btn {accountActionMode === 'new' ? 'btn-green' : 'btn-outline'}"
+                  style="padding: 6px 12px; font-size: 12px;"
+                  onclick={() => {
+                    accountActionMode = 'new';
+                    selectedExistingAccountId = '';
+                    allowOverLimitConfirm = false;
+                  }}
+                >
+                  Nueva Cuenta
+                </button>
+                <button
+                  class="btn {accountActionMode === 'existing' ? 'btn-green' : 'btn-outline'}"
+                  style="padding: 6px 12px; font-size: 12px;"
+                  onclick={() => {
+                    accountActionMode = 'existing';
+                    allowOverLimitConfirm = false;
+                  }}
+                >
+                  Cuenta Existente
+                </button>
+              </div>
+            </div>
+
+            {#if accountActionMode === 'existing'}
+              <div style="margin-bottom: 14px;">
+                <label class="field-label">
+                  Selecciona el Cliente Existente
+                  <select
+                    class="select"
+                    value={selectedExistingAccountId}
+                    onchange={(e) => {
+                      const val = (e.currentTarget as HTMLSelectElement).value;
+                      const found = (accountsReport?.cuentas || []).find((a) => a.id === val);
+                      if (found) selectExistingAccountForCharge(found);
+                    }}
+                  >
+                    <option value="">-- Elige un cliente --</option>
+                    {#each accountsReport?.cuentas || [] as acc}
+                      <option value={acc.id}>
+                        {acc.nombre} (ID: {acc.id}) — Saldo actual: ${acc.saldo_actual.toLocaleString()}
+                      </option>
+                    {/each}
+                  </select>
+                </label>
+              </div>
+            {:else}
+              <div class="form-grid">
+                <label class="field-label">
+                  ID / Documento del Cliente *
+                  <input class="input" placeholder="Ej. 10203040" bind:value={formId} />
+                </label>
+                <label class="field-label">
+                  Nombre Completo *
+                  <input class="input" placeholder="Ej. Juan Pérez" bind:value={formName} />
+                </label>
+                <label class="field-label">
+                  Teléfono *
+                  <input class="input" placeholder="Ej. 3001234567" bind:value={formPhone} />
+                </label>
+                <label class="field-label">
+                  Método de Pago Acordado *
+                  <select class="select" bind:value={formPaymentMethod}>
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Transferencia">Transferencia</option>
+                    <option value="Tarjeta">Tarjeta</option>
+                    <option value="Otro">Otro</option>
+                  </select>
+                </label>
+                <label class="field-label">
+                  Tope de Crédito *
+                  <input class="input" type="number" min="0" step="1000" bind:value={formCreditLimit} />
+                </label>
+                <label class="field-label">
+                  Descripción / Referencia *
+                  <input
+                    class="input"
+                    placeholder="Ej. Pago mensual los días 30"
+                    bind:value={formDescription}
+                  />
+                </label>
+              </div>
+            {/if}
+
+            <div style="margin-top: 12px;">
+              <label class="field-label">
+                Nota de esta anotación (Opcional)
+                <input
+                  class="input"
+                  placeholder="Ej. Retira pedido semanal"
+                  bind:value={formMoveNote}
+                />
+              </label>
+            </div>
+
+            <!-- Live Credit Limit Validation Gauge -->
+            <div
+              style="margin-top: 16px; padding: 14px; border-radius: 10px; background: var(--bg-primary); border: 1px solid {exceedsProjectedLimit
+                ? 'var(--accent-red)'
+                : 'var(--border)'};"
+            >
               <div style="display: flex; justify-content: space-between; font-size: 13px;">
-                <strong>{reg.register_id} ({reg.transaction_count} docs)</strong>
+                <span>Saldo actual: <strong>${currentAccountBalance.toLocaleString()}</strong></span>
+                <span>Nuevo cargo: <strong>${cartTotal.toLocaleString()}</strong></span>
+              </div>
+              <div style="display: flex; justify-content: space-between; font-size: 14px; margin-top: 6px;">
                 <span>
-                  Total: <strong>${reg.total_sales.toLocaleString()}</strong> (Crédito: ${reg.credit_sales.toLocaleString()})
+                  Total en cuenta:
+                  <strong style="color: {exceedsProjectedLimit ? 'var(--accent-red)' : 'var(--accent-green)'};">
+                    ${projectedBalance.toLocaleString()}
+                  </strong>
                 </span>
+                <span>Tope: <strong>${activeCreditLimit.toLocaleString()}</strong></span>
               </div>
               <div class="bar-track">
                 <div
                   class="bar-fill"
-                  style="width: {Math.min(100, (reg.total_sales / maxSale) * 100)}%"
+                  style="width: {limitUsagePct}%; background: {exceedsProjectedLimit
+                    ? 'var(--accent-red)'
+                    : limitUsagePct > 80
+                      ? 'var(--accent-amber)'
+                      : 'linear-gradient(90deg, #38bdf8, #34d399)'};"
                 ></div>
               </div>
-            </div>
-          {/each}
-        </div>
 
-        <!-- Top Products Sold Visualization -->
-        <div class="card">
-          <h3 class="card-title">
-            <span>Top Productos por Ingresos</span>
-            <span class="badge badge-ok">Rotación en Vivo</span>
-          </h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Producto</th>
-                <th>Unidades</th>
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each dailyReport?.top_products || [] as prod}
-                <tr>
-                  <td><strong>{prod.product_name}</strong></td>
-                  <td>{prod.quantity}</td>
-                  <td>${prod.revenue.toLocaleString()}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Recent Credit Accounts Preview -->
-      <div class="card">
-        <h3 class="card-title">
-          <span>Cuentas de Crédito Activas por Cliente (Sincronizadas con Google Drive)</span>
-          <button class="btn btn-outline" onclick={() => (activeTab = 'credit')}>
-            Gestionar Cuentas y Anotaciones →
-          </button>
-        </h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Cliente</th>
-              <th>Crédito Histórico</th>
-              <th>Total Pagado</th>
-              <th>Saldo Pendiente</th>
-              <th>Límite Asignado</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each snapshot?.credit_portfolio?.accounts || [] as acc}
-              <tr>
-                <td><strong>{acc.customer_name}</strong></td>
-                <td>${acc.total_credit_issued.toLocaleString()}</td>
-                <td>${acc.total_payments_paid.toLocaleString()}</td>
-                <td><strong>${acc.pending_balance.toLocaleString()}</strong></td>
-                <td>${acc.credit_limit.toLocaleString()}</td>
-                <td><span class={statusBadgeClass(acc.account_status)}>{acc.account_status}</span></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-
-    <!-- TAB 2: CUSTOMER CREDIT ACCOUNTS & NOTES -->
-    {#if activeTab === 'credit'}
-      <div class="panel-grid">
-        <div class="card">
-          <h3 class="card-title">Agregar Anotación / Compromiso a Cuenta de Cliente</h3>
-          <div class="form-grid">
-            <div>
-              <label style="font-size: 12px; color: var(--text-muted);">
-                Nombre o ID del Cliente
-                <input
-                  class="input"
-                  placeholder="Ej. Pedro Pérez o María Gómez"
-                  bind:value={noteCustomerTarget}
-                />
-              </label>
-            </div>
-            <div>
-              <label style="font-size: 12px; color: var(--text-muted);">
-                Fecha Compromiso (Opcional)
-                <input class="input" type="date" bind:value={notePromiseDate} />
-              </label>
-            </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <label style="font-size: 12px; color: var(--text-muted);">
-              Anotación de Cuenta (Se almacena en base de estado y se sincroniza en Google Drive)
-              <input
-                class="input"
-                placeholder="Ej. Dejó abono parcial, cancela el resto el viernes"
-                bind:value={noteText}
-              />
-            </label>
-          </div>
-          <button
-            class="btn btn-green"
-            style="margin-top: 12px; width: 100%;"
-            disabled={loading}
-            onclick={handleAddCreditNote}
-          >
-            Guardar Anotación y Sincronizar Cuenta en Google Drive
-          </button>
-        </div>
-
-        <div class="card">
-          <h3 class="card-title">Configurar Límite de Crédito por Cliente</h3>
-          <div class="form-grid">
-            <div>
-              <label style="font-size: 12px; color: var(--text-muted);">
-                ID de Cliente en Aronium
-                <input class="input" placeholder="Ej. 2" bind:value={limitCustomerID} />
-              </label>
-            </div>
-            <div>
-              <label style="font-size: 12px; color: var(--text-muted);">
-                Monto Límite de Crédito
-                <input class="input" placeholder="Ej. 50000" bind:value={limitAmount} />
-              </label>
-            </div>
-          </div>
-          <button
-            class="btn"
-            style="margin-top: 14px; width: 100%;"
-            disabled={loading}
-            onclick={handleSetCreditLimit}
-          >
-            Actualizar Límite de Crédito
-          </button>
-        </div>
-      </div>
-
-      {#if selectedStatement}
-        <div class="card">
-          <h3 class="card-title">
-            <span>Estado de Cuenta Individual: {selectedStatementCustomer}</span>
-            <button class="btn btn-outline" onclick={() => (selectedStatement = '')}>Cerrar</button>
-          </h3>
-          <pre class="stmt-box">{selectedStatement}</pre>
-        </div>
-      {/if}
-
-      <div class="card">
-        <div class="card-title">
-          <span>Listado de Cuentas de Clientes y Facturas Enrutadas</span>
-          <input
-            class="input"
-            style="max-width: 280px;"
-            placeholder="Buscar cliente por nombre o teléfono..."
-            bind:value={customerSearch}
-          />
-        </div>
-
-        {#each filteredAccounts() as acc}
-          <div
-            style="border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 14px; background: var(--bg-secondary);"
-          >
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                <strong style="font-size: 16px;">{acc.customer_name}</strong>
-                <span style="color: var(--text-muted); font-size: 12px; margin-left: 8px;">
-                  ID #{acc.customer_id} · Tel: {acc.phone_number || 'N/A'} · ID Fiscal: {acc.tax_number || 'N/A'}
-                </span>
-              </div>
-              <div style="display: flex; gap: 8px; align-items: center;">
-                <span class={statusBadgeClass(acc.account_status)}>{acc.account_status}</span>
-                <button
-                  class="btn btn-outline"
-                  style="padding: 5px 10px; font-size: 12px;"
-                  onclick={() => {
-                    noteCustomerTarget = acc.customer_name;
-                    limitCustomerID = String(acc.customer_id);
-                  }}
-                >
-                  Seleccionar en Formulario
-                </button>
-                <button
-                  class="btn"
-                  style="padding: 5px 10px; font-size: 12px;"
-                  onclick={() => handleViewStatement(acc.customer_name)}
-                >
-                  Estado de Cuenta
-                </button>
-              </div>
+              {#if exceedsProjectedLimit}
+                <div style="margin-top: 10px; font-size: 12.5px; color: var(--accent-red);">
+                  ⚠ Atención: Este cargo supera el tope configurado para el cliente.
+                  <label style="display: flex; align-items: center; gap: 8px; margin-top: 6px; color: #fecaca;">
+                    <input type="checkbox" bind:checked={allowOverLimitConfirm} />
+                    Autorizo guardar superando el tope de crédito
+                  </label>
+                </div>
+              {/if}
             </div>
 
-            <div
-              style="display: flex; gap: 24px; margin-top: 10px; font-size: 13px; color: var(--text-muted);"
+            <button
+              class="btn btn-green"
+              style="width: 100%; margin-top: 16px; padding: 14px; font-size: 15px;"
+              disabled={loading}
+              onclick={handleSaveAccountAndItems}
             >
-              <span>Total Crédito: <strong>${acc.total_credit_issued.toLocaleString()}</strong></span>
-              <span>Total Pagado: <strong>${acc.total_payments_paid.toLocaleString()}</strong></span>
-              <span style="color: var(--accent-amber);">
-                Saldo Pendiente: <strong>${acc.pending_balance.toLocaleString()}</strong>
-              </span>
-              <span>
-                Límite: ${acc.credit_limit.toLocaleString()} (Disponible: ${acc.available_credit.toLocaleString()})
-              </span>
+              {loading
+                ? 'Guardando y Sincronizando...'
+                : accountActionMode === 'new'
+                  ? 'Guardar Cuenta y Artículos (Sincronizar con Drive)'
+                  : 'Anotar Artículos a la Cuenta (Sincronizar con Drive)'}
+            </button>
+          </div>
+
+          <!-- Right Card: Barcode Scanner + Live Aronium Product Search + Cart -->
+          <div class="card">
+            <div class="card-title">
+              <span>Agregar Artículos con Escáner o Buscador (Opcional)</span>
+              <button
+                class="btn btn-outline"
+                style="padding: 5px 10px; font-size: 12px;"
+                onclick={() => scannerInputEl?.focus()}
+              >
+                Enfocar Lector
+              </button>
             </div>
 
-            {#if acc.account_notes && acc.account_notes.length > 0}
-              <div
-                style="margin-top: 8px; font-size: 12.5px; color: var(--accent-blue); background: rgba(56,189,248,0.08); padding: 8px 12px; border-radius: 6px;"
-              >
-                <strong>Anotaciones del Cliente:</strong> {acc.account_notes.join(' | ')}
+            <div class="scanner-box">
+              <div style="font-size: 12.5px; color: #a7f3d0; margin-bottom: 8px; font-weight: 600;">
+                Pasa el lector de código de barras aquí (o escribe el nombre del producto):
               </div>
-            {/if}
+              <input
+                bind:this={scannerInputEl}
+                class="scanner-input"
+                placeholder="Escanea código de barras + Enter, o escribe nombre..."
+                bind:value={scannerQuery}
+                oninput={() => searchCatalog(scannerQuery)}
+                onkeydown={handleScannerKeydown}
+              />
 
-            {#if acc.transactions && acc.transactions.length > 0}
-              <table style="margin-top: 12px;">
+              {#if doctor?.pos_db_readable}
+                <div class="catalog-results">
+                  {#if catalogSearching && catalogMatches.length === 0}
+                    <div style="padding: 12px; color: var(--text-muted); font-size: 13px;">
+                      Buscando productos en Aronium...
+                    </div>
+                  {:else if catalogMatches.length === 0}
+                    <div style="padding: 12px; color: var(--text-muted); font-size: 13px;">
+                      No se encontraron productos con "{scannerQuery}".
+                    </div>
+                  {:else}
+                    {#each catalogMatches.slice(0, 8) as prod}
+                      <div
+                        class="catalog-row"
+                        role="button"
+                        tabindex="0"
+                        onclick={async () => {
+                          addProductToCart(prod);
+                          scannerQuery = '';
+                          await searchCatalog('');
+                          await tick();
+                          scannerInputEl?.focus();
+                        }}
+                        onkeydown={async (e) => {
+                          if (e.key === 'Enter') {
+                            addProductToCart(prod);
+                            scannerQuery = '';
+                            await searchCatalog('');
+                            await tick();
+                            scannerInputEl?.focus();
+                          }
+                        }}
+                      >
+                        <div>
+                          <strong>{prod.name}</strong>
+                          <div style="font-size: 11.5px; color: var(--text-muted);">
+                            Código: {prod.barcode || prod.code || 'Sin código'} · Stock Neto: {prod.net_stock_quantity}
+                          </div>
+                        </div>
+                        <div style="text-align: right;">
+                          <strong style="color: var(--accent-green);">
+                            ${Math.round(prod.price).toLocaleString()}
+                          </strong>
+                          <div style="font-size: 11px; color: var(--accent-blue);">+ Agregar</div>
+                        </div>
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+
+            <!-- Selected Items Snapshot Table -->
+            <div style="font-size: 13px; font-weight: 700; margin-bottom: 8px; color: var(--text-muted);">
+              Artículos Anotados en esta Operación ({cartItems.length}) — Precios Congelados
+            </div>
+
+            {#if cartItems.length === 0}
+              <div
+                style="padding: 20px; text-align: center; border: 1px dashed var(--border); border-radius: 10px; color: var(--text-muted); font-size: 13px;"
+              >
+                Todavía no has agregado artículos. Puedes crear la cuenta sin artículos, o escanear productos arriba.
+              </div>
+            {:else}
+              <table>
                 <thead>
                   <tr>
-                    <th>Fecha</th>
-                    <th>Factura #</th>
-                    <th>Caja</th>
-                    <th>Productos Comprados</th>
-                    <th>Total</th>
-                    <th>Pagado</th>
-                    <th>Saldo</th>
-                    <th>Notas</th>
+                    <th>Artículo</th>
+                    <th>Precio</th>
+                    <th>Cantidad</th>
+                    <th>Subtotal</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each acc.transactions as tx}
+                  {#each cartItems as item, idx}
                     <tr>
-                      <td>{tx.date}</td>
-                      <td><strong>{tx.document_number}</strong></td>
-                      <td>{tx.cash_register_id}</td>
-                      <td>{tx.items_summary}</td>
-                      <td>${tx.total_document.toLocaleString()}</td>
-                      <td>${tx.paid_amount.toLocaleString()}</td>
-                      <td><strong>${tx.pending_balance.toLocaleString()}</strong></td>
-                      <td>{tx.combined_notes || '-'}</td>
+                      <td>
+                        <strong>{item.nombre_snapshot}</strong>
+                        <div style="font-size: 11px; color: var(--text-muted);">
+                          {item.codigo_barras || 'SKU'}
+                        </div>
+                      </td>
+                      <td>${item.precio_unitario_snapshot.toLocaleString()}</td>
+                      <td>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                          <button
+                            class="btn btn-outline"
+                            style="padding: 3px 9px;"
+                            onclick={() => updateItemQty(idx, -1)}
+                          >
+                            -
+                          </button>
+                          <strong>{item.cantidad}</strong>
+                          <button
+                            class="btn btn-outline"
+                            style="padding: 3px 9px;"
+                            onclick={() => updateItemQty(idx, 1)}
+                          >
+                            +
+                          </button>
+                        </div>
+                      </td>
+                      <td>
+                        <strong>
+                          ${Math.round(item.cantidad * item.precio_unitario_snapshot).toLocaleString()}
+                        </strong>
+                      </td>
+                      <td>
+                        <button
+                          class="btn btn-red"
+                          style="padding: 4px 8px; font-size: 11px;"
+                          onclick={() => (cartItems = cartItems.filter((_, i) => i !== idx))}
+                        >
+                          Quitar
+                        </button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
               </table>
             {/if}
           </div>
-        {/each}
-      </div>
-    {/if}
+        </div>
+      {/if}
 
-    <!-- TAB 3: INVENTORY, ALERTS & KARDEX -->
-    {#if activeTab === 'inventory'}
-      <div class="card">
-        <div class="card-title">
-          <div style="display: flex; gap: 10px;">
-            <button
-              class="btn {invSubView === 'catalog' ? '' : 'btn-outline'}"
-              onclick={() => (invSubView = 'catalog')}
-            >
-              Catálogo y Existencias en Vivo ({snapshot?.inventory_summary?.total_products || 0})
-            </button>
-            <button
-              class="btn {invSubView === 'kardex' ? '' : 'btn-outline'}"
-              onclick={() => {
-                invSubView = 'kardex';
-                loadKardex();
-              }}
-            >
-              Kardex de Movimientos ({kardexList.length})
-            </button>
+      <!-- BASIC TAB 2: VIEW ACCOUNTS & RECORD PAYMENTS (ABONOS) -->
+      {#if basicTab === 'accounts'}
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">Total por Cobrar en Cuentas</div>
+            <div class="kpi-value" style="color: var(--accent-amber);">
+              ${(accountsReport?.total_saldo_pendiente || 0).toLocaleString()}
+            </div>
+            <div class="kpi-sub">
+              Separado del cierre diario de caja de Aronium
+            </div>
           </div>
-          <div style="display: flex; gap: 10px;">
-            <select class="select" style="width: 170px;" bind:value={invStatusFilter}>
-              <option value="ALL">Todos los estados</option>
-              <option value="OK">Stock OK</option>
-              <option value="STOCK_BAJO">Stock Bajo</option>
-              <option value="AGOTADO">Agotados</option>
-              <option value="STOCK_NEGATIVO">Stock Negativo</option>
-            </select>
-            <input
-              class="input"
-              style="width: 240px;"
-              placeholder="Buscar SKU, código o producto..."
-              bind:value={invSearch}
-            />
+          <div class="kpi-card">
+            <div class="kpi-label">Clientes con Saldo Activo</div>
+            <div class="kpi-value">{accountsReport?.cuentas_activas_con_saldo || 0}</div>
+            <div class="kpi-sub">
+              De {accountsReport?.total_cuentas || 0} cuentas registradas en cuentas.db
+            </div>
           </div>
         </div>
 
-        {#if invSubView === 'catalog'}
-          <table>
-            <thead>
-              <tr>
-                <th>SKU / Código</th>
-                <th>Código de Barras</th>
-                <th>Producto</th>
-                <th>Categoría</th>
-                <th>Stock Actual</th>
-                <th>Mínimo</th>
-                <th>Costo Unit.</th>
-                <th>Precio Venta</th>
-                <th>Margen</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each filteredInventory() as item}
-                <tr>
-                  <td><code>{item.code}</code></td>
-                  <td><code>{item.barcode || '-'}</code></td>
-                  <td><strong>{item.name}</strong></td>
-                  <td>{item.category}</td>
-                  <td><strong>{item.stock_quantity} {item.measurement_unit}</strong></td>
-                  <td>{item.min_stock}</td>
-                  <td>${item.cost.toLocaleString()}</td>
-                  <td>${item.sale_price.toLocaleString()}</td>
-                  <td>{item.estimated_margin_pct.toFixed(1)}%</td>
-                  <td><span class={statusBadgeClass(item.status)}>{item.status}</span></td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {:else}
-          <table>
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Documento</th>
-                <th>Caja</th>
-                <th>Código</th>
-                <th>Producto</th>
-                <th>Movimiento (Delta)</th>
-                <th>Stock Resultante</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each kardexList as k}
-                <tr>
-                  <td>{k.recorded_at}</td>
-                  <td><strong>{k.document_number}</strong></td>
-                  <td>{k.register_id}</td>
-                  <td><code>{k.product_code}</code></td>
-                  <td>{k.product_name}</td>
-                  <td style="color: {k.delta_qty < 0 ? 'var(--accent-amber)' : 'var(--accent-green)'};">
-                    <strong>{k.delta_qty > 0 ? `+${k.delta_qty}` : k.delta_qty}</strong>
-                  </td>
-                  <td><strong>{k.resulting_qty}</strong></td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- TAB 4: CASH REGISTERS -->
-    {#if activeTab === 'registers'}
-      <div class="card">
-        <h3 class="card-title">Comparativa y Trazabilidad por Caja Registradora (PRO-FR-004)</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>ID Caja</th>
-              <th>Transacciones</th>
-              <th>Ventas Contado</th>
-              <th>Ventas a Crédito</th>
-              <th>Total Ventas</th>
-              <th>Ticket Promedio</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each snapshot?.sales_by_register || [] as reg}
-              <tr>
-                <td><strong>{reg.register_id}</strong></td>
-                <td>{reg.transaction_count}</td>
-                <td>${reg.cash_sales.toLocaleString()}</td>
-                <td>${reg.credit_sales.toLocaleString()}</td>
-                <td><strong>${reg.total_sales.toLocaleString()}</strong></td>
-                <td>${reg.average_ticket.toFixed(2)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-
-    <!-- TAB 5: GOOGLE DRIVE & HOT BACKUPS -->
-    {#if activeTab === 'drive'}
-      <div class="panel-grid">
-        <div class="card">
-          <h3 class="card-title">
-            <span>Conexión Directa con Google Drive & Google Sheets</span>
-            <span class={driveStatus?.connected ? 'badge badge-ok' : 'badge badge-warn'}>
-              {driveStatus?.connected ? 'OAuth 2.0 Conectado' : 'Modo Carpeta Local / Sin Token'}
-            </span>
-          </h3>
-          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-            El CLI sincroniza automáticamente la tabla maestra
-            <code>{driveStatus?.master_workbook_name || 'Aronium_Inventario_y_Cuentas_Credito.xlsx'}</code>
-            y las fichas individuales de cada cliente en
-            <code>{driveStatus?.sync_dir || 'GoogleDriveSync'}</code>.
-          </p>
-          <div style="display: flex; gap: 10px; margin-top: 14px;">
-            <button class="btn" disabled={loading} onclick={handleDriveWebLogin}>
-              Autenticar Google Drive vía Web (OAuth 2.0)
-            </button>
-            <button class="btn btn-green" disabled={loading} onclick={handleSyncDrive}>
-              Sincronizar Tabla Ahora
+        <!-- Inline Payment Form when user clicks "Registrar Pago / Abono" -->
+        {#if activePayAccount}
+          <div class="card" style="border-color: var(--accent-green);">
+            <div class="card-title">
+              <span>Registrar Pago / Abono para {activePayAccount.nombre}</span>
+              <button class="btn btn-outline" onclick={() => (activePayAccount = null)}>Cancelar</button>
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-top: 0;">
+              Saldo pendiente actual: <strong>${activePayAccount.saldo_actual.toLocaleString()}</strong>.
+              Este pago se registra en <code>cuentas.db</code> sin dañar tu cierre diario de caja en Aronium.
+            </p>
+            <div class="form-grid">
+              <label class="field-label">
+                Monto que Paga el Cliente
+                <input class="input" type="number" min="1" bind:value={payAmount} />
+              </label>
+              <label class="field-label">
+                Método de Pago Recibido
+                <select class="select" bind:value={payMethod}>
+                  <option value="Efectivo">Efectivo</option>
+                  <option value="Transferencia">Transferencia</option>
+                  <option value="Tarjeta">Tarjeta</option>
+                  <option value="Otro">Otro</option>
+                </select>
+              </label>
+              <label class="field-label">
+                Nota del Pago
+                <input class="input" bind:value={payNote} />
+              </label>
+            </div>
+            <button
+              class="btn btn-green"
+              style="margin-top: 14px;"
+              disabled={loading}
+              onclick={handleRecordPayment}
+            >
+              Confirmar Pago y Actualizar Google Drive
             </button>
           </div>
+        {/if}
 
-          {#if lastSyncResult}
-            <div
-              style="margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--bg-primary); font-size: 12.5px;"
-            >
-              <div><strong>Última Tabla Maestra Generada:</strong> {lastSyncResult.master_workbook_path}</div>
-              <div style="margin-top: 4px;">
-                <strong>Cuentas de Clientes Actualizadas:</strong>
-                {lastSyncResult.customer_files?.length || 0} archivos
-              </div>
+        {#if selectedStatement}
+          <div class="card">
+            <div class="card-title">
+              <span>Recibo / Estado de Cuenta: {selectedStatementCustomer}</span>
+              <button class="btn btn-outline" onclick={() => (selectedStatement = '')}>Cerrar</button>
             </div>
+            <pre class="stmt-box">{selectedStatement}</pre>
+          </div>
+        {/if}
+
+        <div class="card">
+          <div class="card-title">
+            <span>Cuentas de Clientes Registradas</span>
+            <input
+              class="input"
+              style="max-width: 300px;"
+              placeholder="Buscar por nombre, ID o teléfono..."
+              bind:value={accountSearch}
+            />
+          </div>
+
+          {#if filteredAccounts().length === 0}
+            <div style="padding: 24px; text-align: center; color: var(--text-muted);">
+              No hay cuentas registradas todavía. Ve a <strong>"1. Crear Cuenta / Anotar Artículos"</strong> para crear la primera.
+            </div>
+          {:else}
+            {#each filteredAccounts() as acc}
+              <div
+                style="border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 14px; background: var(--bg-secondary);"
+              >
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                  <div>
+                    <strong style="font-size: 16.5px;">{acc.nombre}</strong>
+                    <span class={statusBadgeClass(acc.estado)} style="margin-left: 8px;">{acc.estado}</span>
+                    <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">
+                      ID: <strong>{acc.id}</strong> · Tel: {acc.telefono || 'Sin teléfono'} · Pago: {acc.metodo_pago} · {acc.descripcion}
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button
+                      class="btn btn-green"
+                      onclick={() => {
+                        activePayAccount = acc;
+                        payAmount = acc.saldo_actual;
+                        payMethod = acc.metodo_pago || 'Efectivo';
+                      }}
+                    >
+                      Registrar Pago / Abono
+                    </button>
+                    <button
+                      class="btn"
+                      onclick={async () => {
+                        selectExistingAccountForCharge(acc);
+                        basicTab = 'create';
+                        await tick();
+                        scannerInputEl?.focus();
+                      }}
+                    >
+                      Anotar Artículos
+                    </button>
+                    <button
+                      class="btn btn-outline"
+                      onclick={() =>
+                        (expandedAccountId = expandedAccountId === acc.id ? '' : acc.id)}
+                    >
+                      {expandedAccountId === acc.id ? 'Ocultar Detalle' : 'Ver Detalle'}
+                    </button>
+                    <button
+                      class="btn btn-outline"
+                      onclick={() => handleViewStatement(acc.id, acc.nombre)}
+                    >
+                      Recibo
+                    </button>
+                  </div>
+                </div>
+
+                <div style="display: flex; gap: 24px; margin-top: 12px; font-size: 13.5px; flex-wrap: wrap;">
+                  <span>Total Cargos: <strong>${acc.total_cargos.toLocaleString()}</strong></span>
+                  <span>Total Pagado: <strong>${acc.total_abonos.toLocaleString()}</strong></span>
+                  <span style="color: var(--accent-amber);">
+                    Saldo Pendiente: <strong>${acc.saldo_actual.toLocaleString()}</strong>
+                  </span>
+                  <span>
+                    Tope: ${acc.tope_credito.toLocaleString()} (Disponible: ${acc.credito_disponible.toLocaleString()})
+                  </span>
+                </div>
+
+                {#if expandedAccountId === acc.id && acc.movimientos}
+                  <table style="margin-top: 12px;">
+                    <thead>
+                      <tr>
+                        <th>Fecha</th>
+                        <th>Tipo</th>
+                        <th>Monto</th>
+                        <th>Método</th>
+                        <th>Detalle / Artículos Congelados</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each acc.movimientos as mv}
+                        <tr>
+                          <td>{mv.fecha}</td>
+                          <td>
+                            <span class={mv.tipo === 'ABONO' ? 'badge badge-ok' : 'badge badge-warn'}>
+                              {mv.tipo}
+                            </span>
+                          </td>
+                          <td><strong>${mv.monto.toLocaleString()}</strong></td>
+                          <td>{mv.metodo_pago_usado}</td>
+                          <td>
+                            <div>{mv.nota}</div>
+                            {#if mv.items && mv.items.length > 0}
+                              <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+                                {#each mv.items as it}
+                                  <div>
+                                    • {it.cantidad}x {it.nombre_snapshot} ({it.codigo_barras || 'SKU'}) @ $
+                                    {it.precio_unitario_snapshot.toLocaleString()} = $
+                                    {it.subtotal.toLocaleString()}
+                                  </div>
+                                {/each}
+                              </div>
+                            {/if}
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                {/if}
+              </div>
+            {/each}
           {/if}
         </div>
+      {/if}
 
+      <!-- BASIC TAB 3: NET INVENTORY (STOCK ARONIUM - UNIDADES EN CUENTAS) -->
+      {#if basicTab === 'inventory'}
         <div class="card">
-          <h3 class="card-title">Respaldo en Caliente de pos.db (SQLite Online Snapshot)</h3>
-          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-            Crea un snapshot transaccionalmente consistente (<code>VACUUM INTO</code>) sin cerrar Aronium Lite,
-            comprimido en <code>.zip</code> y con cifrado opcional <strong>AES-256-GCM</strong>.
-          </p>
-          <label style="font-size: 12px; color: var(--text-muted);">
-            Frase de Cifrado AES-256-GCM (Opcional)
-            <input
-              class="input"
-              type="password"
-              placeholder="Dejar vacío para respaldo comprimido estándar"
-              bind:value={backupPassphrase}
-            />
-          </label>
+          <div class="card-title">
+            <span>Inventario Real Disponible (Stock Aronium - Artículos en Cuentas)</span>
+            <div style="display: flex; gap: 10px;">
+              <select class="select" style="width: 165px;" bind:value={invStatusFilter}>
+                <option value="ALL">Todos</option>
+                <option value="OK">Disponibles</option>
+                <option value="STOCK_BAJO">Stock Bajo</option>
+                <option value="AGOTADO">Agotados</option>
+                <option value="STOCK_NEGATIVO">Stock Negativo</option>
+              </select>
+              <input
+                class="input"
+                style="width: 240px;"
+                placeholder="Buscar producto o código..."
+                bind:value={invSearch}
+              />
+            </div>
+          </div>
+
+          {#if !doctor?.pos_db_readable}
+            <div style="padding: 20px; color: var(--text-muted);">
+              Conecta tu archivo <code>pos.db</code> de Aronium en el botón <strong>"Seleccionar Base de Datos"</strong> arriba para ver tus productos.
+            </div>
+          {:else}
+            <table>
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Producto</th>
+                  <th>Precio Venta</th>
+                  <th>Stock Aronium</th>
+                  <th>En Cuentas</th>
+                  <th>Stock Neto Real</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each filteredInventory() as item}
+                  <tr>
+                    <td><code>{item.barcode || item.code}</code></td>
+                    <td><strong>{item.name}</strong></td>
+                    <td>${Math.round(item.sale_price).toLocaleString()}</td>
+                    <td>{item.aronium_stock} {item.measurement_unit}</td>
+                    <td>{item.committed_in_accounts_qty}</td>
+                    <td><strong>{item.net_stock_quantity} {item.measurement_unit}</strong></td>
+                    <td>
+                      <span class={statusBadgeClass(item.status)}>
+                        {friendlyStockStatus(item.status)}
+                      </span>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- BASIC TAB 4: GOOGLE DRIVE & DATABASE SELECTOR -->
+      {#if basicTab === 'setup'}
+        <div class="panel-grid">
+          <div class="card">
+            <div class="card-title">
+              <span>Guardar Mis Cuentas e Inventario en Google Drive</span>
+              <span class={driveStatus?.connected ? 'badge badge-ok' : 'badge badge-warn'}>
+                {driveStatus?.connected ? 'Conectado' : 'Modo Carpeta Local'}
+              </span>
+            </div>
+            <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.55;">
+              Cada vez que creas una cuenta, anotas artículos o registras un pago, el sistema genera un Excel
+              actualizado (<code>{driveStatus?.master_workbook_name}</code>) y una copia segura de tu base de
+              cuentas en Google Drive.
+            </p>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <button class="btn" disabled={loading} onclick={handleDriveWebLogin}>
+                Conectar Cuenta de Google Drive
+              </button>
+              <button class="btn btn-green" disabled={loading} onclick={handleSyncDrive}>
+                Sincronizar con Drive Ahora
+              </button>
+            </div>
+            {#if lastSyncResult}
+              <div style="margin-top: 14px; font-size: 12.5px; color: var(--accent-green);">
+                ✓ Archivo actualizado: <code>{lastSyncResult.master_workbook_path}</code>
+              </div>
+            {/if}
+          </div>
+
+          <div class="card">
+            <div class="card-title">Elegir Bases de Datos (Aronium y Cuentas)</div>
+            <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+              <strong>Productos de Aronium:</strong> <code>{configInfo?.config?.pos_db_path}</code><br />
+              <strong>Base de Cuentas:</strong> <code>{configInfo?.config?.accounts_db_path}</code>
+            </p>
+            <button class="btn btn-outline" onclick={() => (showDbModal = true)}>
+              Cambiar Ubicación de Bases de Datos
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+  <!-- ========================================================================= -->
+  <!-- MODO AVANZADO (VISTA TÉCNICA Y ADMINISTRATIVA COMPLETA)                   -->
+  <!-- ========================================================================= -->
+  {:else}
+    <div class="layout">
+      <aside class="sidebar">
+        <div>
           <button
-            class="btn"
-            style="width: 100%; margin-top: 12px;"
-            disabled={loading}
-            onclick={handleCreateBackup}
+            class="nav-btn {advTab === 'dashboard' ? 'active' : ''}"
+            onclick={() => (advTab = 'dashboard')}
           >
-            Crear Respaldo en Caliente Ahora
+            <span>1. Dashboard & Métricas</span>
+            <span>📊</span>
           </button>
 
-          {#if lastBackup}
-            <div
-              style="margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--bg-primary); font-size: 12px;"
-            >
-              <div><strong>Archivo:</strong> {lastBackup.archive_path}</div>
-              <div><strong>SHA-256:</strong> <code>{lastBackup.sha256}</code></div>
-            </div>
-          {/if}
-        </div>
-      </div>
-    {/if}
-
-    <!-- TAB 6: DOCTOR & AUTO-START SERVICE -->
-    {#if activeTab === 'doctor'}
-      <div class="panel-grid">
-        <div class="card">
-          <h3 class="card-title">
-            <span>Diagnóstico de Salud del Sistema (`aronium-util doctor`)</span>
-            <span class={doctor?.healthy ? 'badge badge-ok' : 'badge badge-danger'}>
-              {doctor?.healthy ? 'SALUDABLE' : 'REVISAR'}
-            </span>
-          </h3>
-          <table>
-            <tbody>
-              <tr>
-                <td><strong>Base Aronium (Solo Lectura)</strong></td>
-                <td><code>{doctor?.pos_db_path}</code> ({doctor?.pos_db_readable ? 'OK' : 'Error'})</td>
-              </tr>
-              <tr>
-                <td><strong>PRAGMA quick_check</strong></td>
-                <td><span class="badge badge-ok">{doctor?.quick_check_result}</span></td>
-              </tr>
-              <tr>
-                <td><strong>Versión Esquema Aronium</strong></td>
-                <td>{doctor?.aronium_schema_version} ({doctor?.detected_tables?.length || 0} tablas)</td>
-              </tr>
-              <tr>
-                <td><strong>Base de Estado Local</strong></td>
-                <td><code>{doctor?.state_db_path}</code> ({doctor?.state_db_ready ? 'Lista' : 'Error'})</td>
-              </tr>
-              <tr>
-                <td><strong>Identidad de Caja</strong></td>
-                <td>
-                  <strong>{doctor?.cash_register_id}</strong> (Conflicto en red: {doctor?.register_id_conflict
-                    ? 'SÍ'
-                    : 'No'})
-                </td>
-              </tr>
-              <tr>
-                <td><strong>Cola Offline (sync_outbox)</strong></td>
-                <td>{doctor?.pending_outbox_count || 0} eventos pendientes</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card">
-          <h3 class="card-title">Servicio de Inicio Automático con Windows (`aronium-util watch`)</h3>
-          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-            El motor CLI se registra en el arranque de Windows para ejecutarse apenas se encienda el equipo y
-            procesar en vivo todas las ventas, cambios de stock y cuentas de crédito que se registren en
-            <code>pos.db</code>.
-          </p>
-          <div
-            style="padding: 12px; border-radius: 8px; background: var(--bg-primary); font-size: 12.5px; margin-bottom: 14px;"
+          <button
+            class="nav-btn {advTab === 'accounts' ? 'active' : ''}"
+            onclick={() => (advTab = 'accounts')}
           >
-            <strong>Estado actual:</strong> <code>{serviceStatus?.status || 'Consultando...'}</code>
+            <span>2. Ledger Cuentas (cuentas.db)</span>
+            <span>🧾</span>
+          </button>
+
+          <button
+            class="nav-btn {advTab === 'inventory' ? 'active' : ''}"
+            onclick={() => {
+              advTab = 'inventory';
+              loadKardex();
+            }}
+          >
+            <span>3. Inventario Neto & Kardex</span>
+            <span>📦</span>
+          </button>
+
+          <button
+            class="nav-btn {advTab === 'registers' ? 'active' : ''}"
+            onclick={() => (advTab = 'registers')}
+          >
+            <span>4. Cajas Registradoras</span>
+            <span>🖥️</span>
+          </button>
+
+          <button
+            class="nav-btn {advTab === 'drive' ? 'active' : ''}"
+            onclick={() => (advTab = 'drive')}
+          >
+            <span>5. Google Drive & Backups</span>
+            <span>☁️</span>
+          </button>
+
+          <button
+            class="nav-btn {advTab === 'doctor' ? 'active' : ''}"
+            onclick={() => (advTab = 'doctor')}
+          >
+            <span>6. Diagnóstico & Servicio</span>
+            <span>🛡️</span>
+          </button>
+        </div>
+
+        <div class="card" style="margin-bottom: 0; padding: 14px;">
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
+            MOTOR SIDECAR GO CLI
+          </div>
+          <div style="font-size: 12.5px; font-weight: 700; color: var(--accent-green);">
+            ● {doctor?.pos_db_readable ? 'pos.db Conectado (RO)' : 'pos.db Pendiente'}
+          </div>
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+            Caja: <strong>{doctor?.cash_register_id || 'POS-01'}</strong>
           </div>
           <button
             class="btn btn-green"
-            style="width: 100%;"
+            style="width: 100%; margin-top: 10px;"
             disabled={loading}
-            onclick={handleInstallAutoStartService}
+            onclick={handleSyncDrive}
           >
-            Registrar / Actualizar Inicio Automático al Encender Windows
+            Sincronizar Drive Ahora
           </button>
         </div>
-      </div>
-    {/if}
-  </main>
+      </aside>
+
+      <main class="main-area">
+        <div class="topbar">
+          <div>
+            <h1 style="margin: 0; font-size: 20px;">
+              {snapshot?.store_name || 'Aronium Utility'} — Panel Técnico Avanzado
+            </h1>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+              Doble Base: <code>pos.db</code> (Solo Lectura) + <code>cuentas.db</code> (SQLite WAL)
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn btn-outline" disabled={loading} onclick={refreshAll}>
+              {loading ? 'Actualizando...' : 'Actualizar Datos'}
+            </button>
+            <button class="btn" disabled={loading} onclick={handleSyncDrive}>
+              Sincronizar Drive + Backup
+            </button>
+          </div>
+        </div>
+
+        {#if advTab === 'dashboard'}
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-label">Ventas POS en Aronium (pos.db)</div>
+              <div class="kpi-value">${(dailyReport?.total_sales || 0).toLocaleString()}</div>
+              <div class="kpi-sub">
+                {dailyReport?.total_transactions || 0} transacciones · Sin ruido de cartera
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Saldo Cartera (cuentas.db)</div>
+              <div class="kpi-value" style="color: var(--accent-amber);">
+                ${(accountsReport?.total_saldo_pendiente || 0).toLocaleString()}
+              </div>
+              <div class="kpi-sub">
+                {accountsReport?.cuentas_activas_con_saldo || 0} activas · {accountsReport?.cuentas_sobre_tope || 0} sobre tope
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Valorización Inventario Neto</div>
+              <div class="kpi-value" style="color: var(--accent-green);">
+                ${(snapshot?.inventory_summary?.total_retail_value || 0).toLocaleString()}
+              </div>
+              <div class="kpi-sub">
+                Costo: ${(snapshot?.inventory_summary?.total_cost_value || 0).toLocaleString()}
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Alertas Stock Neto</div>
+              <div class="kpi-value" style="color: var(--accent-red);">
+                {(snapshot?.inventory_summary?.low_stock_count || 0) +
+                  (snapshot?.inventory_summary?.out_of_stock_count || 0) +
+                  (snapshot?.inventory_summary?.negative_stock_count || 0)}
+              </div>
+              <div class="kpi-sub">
+                Bajo: {snapshot?.inventory_summary?.low_stock_count || 0} · Agotados: {snapshot?.inventory_summary?.out_of_stock_count || 0}
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-grid">
+            <div class="card">
+              <h3 class="card-title">Ventas por Caja Registradora (pos.db)</h3>
+              {#each snapshot?.sales_by_register || [] as reg}
+                <div style="margin-bottom: 12px;">
+                  <div style="display: flex; justify-content: space-between; font-size: 13px;">
+                    <strong>{reg.register_id} ({reg.transaction_count} docs)</strong>
+                    <span><strong>${reg.total_sales.toLocaleString()}</strong></span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+
+            <div class="card">
+              <h3 class="card-title">Top Productos Vendidos</h3>
+              <table>
+                <thead>
+                  <tr><th>Producto</th><th>Cant.</th><th>Total</th></tr>
+                </thead>
+                <tbody>
+                  {#each dailyReport?.top_products || [] as prod}
+                    <tr>
+                      <td><strong>{prod.product_name}</strong></td>
+                      <td>{prod.quantity}</td>
+                      <td>${prod.revenue.toLocaleString()}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {/if}
+
+        {#if advTab === 'accounts'}
+          <div class="card">
+            <div class="card-title">
+              <span>Libro Mayor de Cuentas (<code>{accountsReport?.accounts_db_path}</code>)</span>
+              <button class="btn btn-green" onclick={() => { setUIMode('basic'); basicTab = 'create'; }}>
+                Abrir Creador + Escáner
+              </button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Cliente</th>
+                  <th>Teléfono</th>
+                  <th>Cargos</th>
+                  <th>Abonos</th>
+                  <th>Saldo Actual</th>
+                  <th>Tope</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each accountsReport?.cuentas || [] as acc}
+                  <tr>
+                    <td><code>{acc.id}</code></td>
+                    <td><strong>{acc.nombre}</strong></td>
+                    <td>{acc.telefono}</td>
+                    <td>${acc.total_cargos.toLocaleString()}</td>
+                    <td>${acc.total_abonos.toLocaleString()}</td>
+                    <td><strong>${acc.saldo_actual.toLocaleString()}</strong></td>
+                    <td>${acc.tope_credito.toLocaleString()}</td>
+                    <td><span class={statusBadgeClass(acc.estado)}>{acc.estado}</span></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+        {#if advTab === 'inventory'}
+          <div class="card">
+            <div class="card-title">
+              <div style="display: flex; gap: 10px;">
+                <button
+                  class="btn {invSubView === 'catalog' ? '' : 'btn-outline'}"
+                  onclick={() => (invSubView = 'catalog')}
+                >
+                  Catálogo & Inventario Neto
+                </button>
+                <button
+                  class="btn {invSubView === 'kardex' ? '' : 'btn-outline'}"
+                  onclick={() => { invSubView = 'kardex'; loadKardex(); }}
+                >
+                  Kardex de Movimientos
+                </button>
+              </div>
+              <input class="input" style="width: 240px;" placeholder="Buscar producto..." bind:value={invSearch} />
+            </div>
+
+            {#if invSubView === 'catalog'}
+              <table>
+                <thead>
+                  <tr>
+                    <th>SKU</th><th>Código</th><th>Producto</th><th>Stock POS</th><th>En Cuentas</th><th>Stock Neto</th><th>Costo</th><th>Venta</th><th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each filteredInventory() as item}
+                    <tr>
+                      <td><code>{item.code}</code></td>
+                      <td><code>{item.barcode || '-'}</code></td>
+                      <td><strong>{item.name}</strong></td>
+                      <td>{item.aronium_stock}</td>
+                      <td>{item.committed_in_accounts_qty}</td>
+                      <td><strong>{item.net_stock_quantity}</strong></td>
+                      <td>${item.cost.toLocaleString()}</td>
+                      <td>${item.sale_price.toLocaleString()}</td>
+                      <td><span class={statusBadgeClass(item.status)}>{item.status}</span></td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {:else}
+              <table>
+                <thead>
+                  <tr><th>Fecha</th><th>Doc</th><th>Caja</th><th>Producto</th><th>Delta</th><th>Resultante</th></tr>
+                </thead>
+                <tbody>
+                  {#each kardexList as k}
+                    <tr>
+                      <td>{k.recorded_at}</td>
+                      <td>{k.document_number}</td>
+                      <td>{k.register_id}</td>
+                      <td>{k.product_name}</td>
+                      <td>{k.delta_qty}</td>
+                      <td>{k.resulting_qty}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </div>
+        {/if}
+
+        {#if advTab === 'registers'}
+          <div class="card">
+            <h3 class="card-title">Trazabilidad por Caja Registradora (PRO-FR-004)</h3>
+            <table>
+              <thead>
+                <tr><th>ID Caja</th><th>Docs</th><th>Contado</th><th>Crédito POS</th><th>Total Ventas</th><th>Ticket Promedio</th></tr>
+              </thead>
+              <tbody>
+                {#each snapshot?.sales_by_register || [] as reg}
+                  <tr>
+                    <td><strong>{reg.register_id}</strong></td>
+                    <td>{reg.transaction_count}</td>
+                    <td>${reg.cash_sales.toLocaleString()}</td>
+                    <td>${reg.credit_sales.toLocaleString()}</td>
+                    <td><strong>${reg.total_sales.toLocaleString()}</strong></td>
+                    <td>${reg.average_ticket.toFixed(2)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+        {#if advTab === 'drive'}
+          <div class="panel-grid">
+            <div class="card">
+              <h3 class="card-title">Google Drive & Google Sheets (OAuth 2.0 Web)</h3>
+              <p style="font-size: 13px; color: var(--text-muted);">
+                Exporta 4 pestañas (<code>Cuentas</code>, <code>Movimientos</code>, <code>Detalle_Articulos</code>, <code>Inventario_Neto</code>) y respaldo binario en caliente <code>cuentas_backup.db</code>.
+              </p>
+              <div style="display: flex; gap: 10px;">
+                <button class="btn" onclick={handleDriveWebLogin}>Autenticar Google Drive Web</button>
+                <button class="btn btn-green" onclick={handleSyncDrive}>Sincronizar Ahora</button>
+              </div>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Respaldo en Caliente AES-256-GCM (pos.db)</h3>
+              <input class="input" type="password" placeholder="Frase AES-256-GCM opcional" bind:value={backupPassphrase} />
+              <button class="btn" style="margin-top: 12px; width: 100%;" onclick={handleCreateBackup}>
+                Crear Respaldo en Caliente
+              </button>
+              {#if lastBackup}
+                <div style="margin-top: 10px; font-size: 12px;">
+                  <code>{lastBackup.archive_path}</code>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        {#if advTab === 'doctor'}
+          <div class="panel-grid">
+            <div class="card">
+              <h3 class="card-title">Diagnóstico Técnico (`aronium-util doctor`)</h3>
+              <table>
+                <tbody>
+                  <tr><td>pos.db (Solo Lectura)</td><td><code>{doctor?.pos_db_path}</code> ({doctor?.pos_db_readable ? 'OK' : 'No encontrado'})</td></tr>
+                  <tr><td>cuentas.db (WAL)</td><td><code>{doctor?.accounts_db_path}</code> ({doctor?.accounts_db_ready ? 'Lista' : 'Error'})</td></tr>
+                  <tr><td>PRAGMA quick_check</td><td>{doctor?.quick_check_result || 'N/A'}</td></tr>
+                  <tr><td>Esquema Aronium</td><td>{doctor?.aronium_schema_version || 'N/A'}</td></tr>
+                  <tr><td>Outbox Offline</td><td>{doctor?.pending_outbox_count || 0} pendientes</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="card">
+              <h3 class="card-title">Inicio Automático en Windows</h3>
+              <p style="font-size: 13px; color: var(--text-muted);">
+                Estado: <code>{serviceStatus?.status}</code>
+              </p>
+              <button class="btn btn-green" style="width: 100%;" onclick={handleInstallAutoStartService}>
+                Registrar Acceso Directo en Carpeta Startup
+              </button>
+            </div>
+          </div>
+        {/if}
+      </main>
+    </div>
+  {/if}
 </div>

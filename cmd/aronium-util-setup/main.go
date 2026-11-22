@@ -10,7 +10,9 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
+	"github.com/SilverFeit/Aronium-Utility/internal/service"
 )
 
 //go:embed payload/aronium-util.bin
@@ -19,7 +21,7 @@ var embeddedCLIBinary []byte
 //go:embed payload/aronium-utility-ui.bin
 var embeddedUIBinary []byte
 
-const InstallerVersion = "1.1.0"
+const InstallerVersion = "1.2.0"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -155,11 +157,13 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 	// 3. Configure environment variables & User PATH
 	cfgPath := filepath.Join(dataDir, "aronium-util.yaml")
 	stateDBPath := filepath.Join(dataDir, "aronium_utility_state.db")
+	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
 	envVars := map[string]string{
 		"ARONIUM_UTIL_HOME":   dataDir,
 		"ARONIUM_UTIL_CONFIG": cfgPath,
 		"ARONIUM_POS_DB":      posDB,
 		"ARONIUM_STATE_DB":    stateDBPath,
+		"ARONIUM_ACCOUNTS_DB": accountsDBPath,
 		"ARONIUM_STORE_ID":    storeID,
 		"ARONIUM_REGISTER_ID": registerID,
 		"ARONIUM_CLI_BIN":     destCLIBin,
@@ -171,21 +175,27 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		return err
 	}
 
-	// 4. Write default configuration file aronium-util.yaml
-	fmt.Printf("[4/5] Generando configuración declarativa inicial (%s)...\n", cfgPath)
+	// 4. Write default configuration file aronium-util.yaml & initialize dedicated cuentas.db
+	fmt.Printf("[4/5] Generando configuración declarativa (%s) y base de cuentas (%s)...\n", cfgPath, accountsDBPath)
 	cfg := config.DefaultConfig()
 	cfg.StoreID = storeID
 	cfg.CashRegisterID = registerID
 	cfg.PosDBPath = posDB
 	cfg.StateDBPath = stateDBPath
+	cfg.AccountsDBPath = accountsDBPath
 	cfg.GoogleDrive.TokenVaultPath = filepath.Join(dataDir, "gdrive.token.enc")
 	cfg.GoogleDrive.LocalDriveSyncDir = filepath.Join(dataDir, "GoogleDriveSync")
 	cfg.Backup.BackupDir = filepath.Join(dataDir, "backups")
 	if err := cfg.Save(cfgPath); err != nil {
 		return fmt.Errorf("error guardando aronium-util.yaml: %w", err)
 	}
+	if accDB, err := accounts.OpenAccountsDB(accountsDBPath); err != nil {
+		return fmt.Errorf("error inicializando cuentas.db: %w", err)
+	} else if accDB != nil {
+		_ = accDB.Close()
+	}
 
-	// 5. Register automatic startup on Windows boot/logon + Desktop shortcut for Aronium Utility UI
+	// 5. Register automatic startup on Windows boot/logon (.lnk Startup folder) + Desktop shortcut for Aronium Utility UI
 	fmt.Printf("[5/5] Registrando arranque automático del CLI al encender el equipo y acceso directo de Aronium Utility UI...\n")
 	if installService && len(cliPayload) > 1024 {
 		cmd := exec.Command(destCLIBin, "service", "install", "--config", cfgPath)
@@ -248,9 +258,10 @@ func createWindowsDesktopShortcut(uiExePath string) {
 	if runtime.GOOS != "windows" {
 		return
 	}
+	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	ps := fmt.Sprintf(
-		`$WshShell = New-Object -ComObject WScript.Shell; $Desktop = [Environment]::GetFolderPath('Desktop'); $Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Aronium Utility UI.lnk')); $Shortcut.TargetPath = '%s'; $Shortcut.Description = 'Aronium Utility UI (Tauri 2 + Svelte + Go CLI)'; $Shortcut.Save()`,
-		strings.ReplaceAll(uiExePath, "'", "''"),
+		`$WshShell = New-Object -ComObject WScript.Shell; $Desktop = [Environment]::GetFolderPath('Desktop'); $Shortcut = $WshShell.CreateShortcut((Join-Path $Desktop 'Aronium Utility UI.lnk')); $Shortcut.TargetPath = '%s'; $Shortcut.WorkingDirectory = '%s'; $Shortcut.IconLocation = '%s,0'; $Shortcut.Description = 'Aronium Utility UI (Cuentas de Crédito, Escáner e Inventario Neto)'; $Shortcut.Save()`,
+		esc(uiExePath), esc(filepath.Dir(uiExePath)), esc(uiExePath),
 	)
 	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps).Run()
 }
@@ -266,8 +277,12 @@ func runUninstall(installDir, dataDir string) error {
 	_ = os.Remove(filepath.Join(installDir, uiBinName))
 	_ = os.Remove(filepath.Join(dataDir, "aronium-env.profile"))
 
+	if sp := service.StartupShortcutPath(); sp != "" {
+		_ = os.Remove(sp)
+	}
+
 	if runtime.GOOS == "windows" {
-		for _, k := range []string{"ARONIUM_UTIL_HOME", "ARONIUM_UTIL_CONFIG", "ARONIUM_POS_DB", "ARONIUM_STATE_DB", "ARONIUM_STORE_ID", "ARONIUM_REGISTER_ID", "ARONIUM_CLI_BIN", "ARONIUM_UI_BIN"} {
+		for _, k := range []string{"ARONIUM_UTIL_HOME", "ARONIUM_UTIL_CONFIG", "ARONIUM_POS_DB", "ARONIUM_STATE_DB", "ARONIUM_ACCOUNTS_DB", "ARONIUM_STORE_ID", "ARONIUM_REGISTER_ID", "ARONIUM_CLI_BIN", "ARONIUM_UI_BIN"} {
 			_ = exec.Command("reg.exe", "delete", `HKCU\Environment`, "/v", k, "/f").Run()
 		}
 		_ = exec.Command("reg.exe", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "AroniumUtilityService", "/f").Run()

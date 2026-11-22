@@ -10,13 +10,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================================" -ForegroundColor Cyan
-Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.1.0 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
+Write-Host "  INSTALADOR DE ARONIUM UTILITY v1.2.0 (CLI en Go + Aronium Utility UI)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\AroniumUtility"
 $DataDir    = Join-Path $env:LOCALAPPDATA "AroniumUtility"
 $ConfigFile = Join-Path $DataDir "aronium-util.yaml"
 $StateDb    = Join-Path $DataDir "aronium_utility_state.db"
+$AccountsDb = Join-Path $DataDir "cuentas.db"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -35,6 +36,7 @@ if (Test-Path (Join-Path $PSScriptRoot "aronium-utility-ui.exe")) {
 [Environment]::SetEnvironmentVariable("ARONIUM_UTIL_CONFIG", $ConfigFile, "User")
 [Environment]::SetEnvironmentVariable("ARONIUM_POS_DB",      $PosDbPath,  "User")
 [Environment]::SetEnvironmentVariable("ARONIUM_STATE_DB",    $StateDb,    "User")
+[Environment]::SetEnvironmentVariable("ARONIUM_ACCOUNTS_DB", $AccountsDb, "User")
 [Environment]::SetEnvironmentVariable("ARONIUM_STORE_ID",    $StoreId,    "User")
 [Environment]::SetEnvironmentVariable("ARONIUM_REGISTER_ID", $RegisterId, "User")
 [Environment]::SetEnvironmentVariable("ARONIUM_CLI_BIN",     $DestCLIBin, "User")
@@ -49,7 +51,7 @@ if ($Parts -notcontains $InstallDir) {
 }
 $env:Path = "$env:Path;$InstallDir"
 
-& $DestCLIBin init --config $ConfigFile --pos-db $PosDbPath --store-id $StoreId --register $RegisterId
+& $DestCLIBin init --config $ConfigFile --pos-db $PosDbPath --accounts-db $AccountsDb --store-id $StoreId --register $RegisterId
 
 if ($InstallService) {
     & $DestCLIBin service install --config $ConfigFile

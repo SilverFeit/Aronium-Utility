@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/admin"
 	"github.com/SilverFeit/Aronium-Utility/internal/backup"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
@@ -33,7 +34,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/testutil"
 )
 
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -70,7 +71,13 @@ func run(args []string) error {
 		return runWatch(subArgs)
 	case "service":
 		return runService(subArgs)
-	case "credit", "accounts", "cartera":
+	case "accounts", "cuentas":
+		return runAccounts(subArgs)
+	case "catalog", "productos":
+		return runCatalog(subArgs)
+	case "config":
+		return runConfigCmd(subArgs)
+	case "credit", "cartera":
 		return runCredit(subArgs)
 	case "inventory":
 		return runInventory(subArgs)
@@ -105,15 +112,17 @@ USO:
 
 COMANDOS PRINCIPALES:
   ui          Lanza la aplicación gráfica de escritorio "Aronium Utility UI" (Tauri 2 + Svelte + TypeScript)
-  init        Configura aronium-util.yaml (autodetecta pos.db, ID de caja POS-01, Google Drive, Hub y Facturación)
-  doctor      Diagnóstico de salud (pos.db solo lectura, PRAGMA quick_check, esquema, credenciales, cajas)
+  init        Configura aronium-util.yaml (autodetecta pos.db, crea cuentas.db, ID de caja POS-01, Google Drive)
+  doctor      Diagnóstico de salud (pos.db solo lectura, cuentas.db WAL, esquema, credenciales, cajas)
+  accounts    Libro mayor dedicado en cuentas.db (list, create, charge, pay, statement, status)
+  catalog     Búsqueda en vivo de productos y códigos de barras en pos.db (search)
+  config      Consulta y configura rutas de bases de datos (get, set-db, pick-db)
   drive       Conexión directa a Google Drive & Google Sheets con autenticación vía Web (login, sync, status)
   watch       Demonio en vivo que se inicia al encender el equipo y procesa transacciones sobre pos.db
   service     Registra, inicia, detiene y consulta el servicio de inicio automático en Windows
-  credit      Gestiona cuentas de crédito por cliente, pagos parciales, notas, límites y estados de cuenta
-  inventory   Consulta inventario vivo, valorización, alertas de stock bajo/vencimiento, kardex y listas de precio
+  inventory   Consulta inventario neto (Stock_Aronium - Cuentas), alertas de stock, kardex y listas de precio
   registers   Gestión de identidad de cajas (POS-01, POS-02), prevención de conflictos y ventas por estación
-  sync        Sincronización inmediata de Tabla de Inventario + Cuentas de Crédito hacia Google Drive / Sheets
+  sync        Sincronización de Inventario Neto + Cuentas (cuentas.db + backup) hacia Google Drive / Sheets
   hub         Servidor Central Multi-Estación Offline-First (serve, status, discover)
   backup      Respaldos en caliente (SQLite Online Snapshot), cifrado AES-256-GCM, rotación y restauración
   migrate     Exportación (JSON, CSV, PostgreSQL, SQL Server Express) y verificador post-migración (MIG-004..006)
@@ -125,17 +134,18 @@ COMANDOS PRINCIPALES:
 EJEMPLOS RÁPIDOS:
   aronium-util ui
   aronium-util init --pos-db "C:\Users\Caja\AppData\Local\Aronium\Data\pos.db" --register POS-01
+  aronium-util accounts create --id "102030" --name "Juan López" --phone "5551234" --payment-method "Efectivo" --limit 2000000 --description "Cliente frecuente"
+  aronium-util catalog search --barcode "7701234500011"
+  aronium-util accounts pay --account-id "102030" --amount 500000 --note "Abono mensual"
   aronium-util drive login
   aronium-util sync
-  aronium-util credit list --customer "Pedro"
-  aronium-util credit note add "Pedro Pérez" "Compromiso de pago viernes"
-  aronium-util watch
 `, Version)
 }
 
 func loadConfigWithFlags(fs *flag.FlagSet, args []string) (*config.Config, string, error) {
 	cfgPath := fs.String("config", "", "Ruta a aronium-util.yaml")
 	posDB := fs.String("pos-db", "", "Ruta a pos.db de Aronium Lite")
+	accountsDB := fs.String("accounts-db", "", "Ruta a cuentas.db (base dedicada de cuentas de crédito)")
 	stateDB := fs.String("state-db", "", "Ruta a aronium_utility_state.db")
 	regID := fs.String("register", "", "ID de caja registradora (ej. POS-01)")
 	if err := fs.Parse(args); err != nil {
@@ -147,6 +157,9 @@ func loadConfigWithFlags(fs *flag.FlagSet, args []string) (*config.Config, strin
 	}
 	if *posDB != "" {
 		cfg.PosDBPath = *posDB
+	}
+	if *accountsDB != "" {
+		cfg.AccountsDBPath = *accountsDB
 	}
 	if *stateDB != "" {
 		cfg.StateDBPath = *stateDB
@@ -208,6 +221,7 @@ func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "Ruta donde guardar aronium-util.yaml")
 	posDB := fs.String("pos-db", "", "Ruta a pos.db (autodetecta %LOCALAPPDATA%\\Aronium\\Data\\pos.db)")
+	accountsDB := fs.String("accounts-db", "", "Ruta a cuentas.db (por defecto %LOCALAPPDATA%\\AroniumUtility\\cuentas.db)")
 	storeID := fs.String("store-id", "STORE-01", "Identificador de la tienda o sede")
 	storeName := fs.String("store-name", "Mi Comercio Aronium", "Nombre comercial de la tienda")
 	registerID := fs.String("register", "POS-01", "ID único de la caja registradora (ej. POS-01)")
@@ -224,6 +238,9 @@ func runInit(args []string) error {
 	cfg := config.DefaultConfig()
 	if *posDB != "" {
 		cfg.PosDBPath = *posDB
+	}
+	if *accountsDB != "" {
+		cfg.AccountsDBPath = *accountsDB
 	}
 	cfg.StoreID = *storeID
 	cfg.StoreName = *storeName
@@ -254,6 +271,13 @@ func runInit(args []string) error {
 		return err
 	}
 
+	// Initialize dedicated accounts DB (cuentas.db) immediately during init/install
+	if accConn, err := accounts.OpenAccountsDB(cfg.AccountsDBPath); err == nil {
+		_ = accConn.Close()
+	} else {
+		return fmt.Errorf("no se pudo inicializar cuentas.db: %w", err)
+	}
+
 	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
 	if err != nil {
 		return err
@@ -270,6 +294,7 @@ func runInit(args []string) error {
 	fmt.Printf("    • Comercio:          %s (%s)\n", cfg.StoreName, cfg.StoreID)
 	fmt.Printf("    • Caja Registradora: %s\n", cfg.CashRegisterID)
 	fmt.Printf("    • Base Aronium:      %s\n", cfg.PosDBPath)
+	fmt.Printf("    • Base de Cuentas:   %s\n", cfg.AccountsDBPath)
 	fmt.Printf("    • Base de Estado:    %s\n", cfg.StateDBPath)
 	fmt.Printf("    • Carpeta Drive:     %s\n", filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName))
 
@@ -292,6 +317,14 @@ func runDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
+	rep.AccountsDBPath = cfg.AccountsDBPath
+	if accMgr, err := accounts.NewManager(cfg.AccountsDBPath); err == nil {
+		rep.AccountsDBReady = true
+		_ = accMgr.Close()
+	} else {
+		rep.AccountsDBReady = false
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("No se pudo abrir cuentas.db (%s): %v", cfg.AccountsDBPath, err))
+	}
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -303,6 +336,7 @@ func runDoctor(args []string) error {
 	fmt.Println("===============================================================")
 	fmt.Printf("Estado General:         %v\n", map[bool]string{true: "SALUDABLE (OK)", false: "ATENCIÓN REQUERIDA"}[rep.Healthy])
 	fmt.Printf("Ruta pos.db (RO):       %s (Legible: %v)\n", rep.PosDBPath, rep.PosDBReadable)
+	fmt.Printf("Base de Cuentas (WAL):  %s (Lista: %v)\n", rep.AccountsDBPath, rep.AccountsDBReady)
 	fmt.Printf("PRAGMA quick_check:     %s\n", rep.QuickCheckResult)
 	fmt.Printf("Versión Esquema:        %s (%d tablas detectadas)\n", rep.AroniumSchemaVersion, len(rep.DetectedTables))
 	fmt.Printf("Base de Estado Local:   %s (Lista: %v)\n", rep.StateDBPath, rep.StateDBReady)
@@ -1388,3 +1422,551 @@ func truncateUUID(s string) string {
 	}
 	return s[:24]
 }
+
+// 17. accounts (Dedicated WAL Ledger cuentas.db — TODO-102, TODO-105)
+func runAccounts(args []string) error {
+	sub := "list"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = strings.ToLower(args[0])
+		args = args[1:]
+	}
+
+	switch sub {
+	case "list":
+		fs := flag.NewFlagSet("accounts list", flag.ContinueOnError)
+		search := fs.String("search", "", "Filtrar por ID, nombre o teléfono")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		rep, err := mgr.ListAccounts(*search)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(rep)
+		}
+
+		fmt.Println("================================================================================")
+		fmt.Printf("  CUENTAS DE CRÉDITO EN BASE DEDICADA (%s)\n", rep.AccountsDBPath)
+		fmt.Printf("  Saldo Total Pendiente: $%d | Cuentas Activas: %d / %d | Sobre Tope: %d\n",
+			rep.TotalPendingBalance, rep.ActiveAccountsCount, rep.TotalAccountsCount, rep.OverLimitCount)
+		fmt.Println("================================================================================")
+		for _, acc := range rep.Accounts {
+			fmt.Printf("• [%-12s] %-24s | Tel: %-12s | Saldo: $%-9d | Tope: $%-9d | [%s]\n",
+				acc.ID, acc.Name, acc.Phone, acc.CurrentBalance, acc.CreditLimit, acc.Status)
+			for _, mv := range acc.Movements {
+				fmt.Printf("    -> [%s] %-6s $%d (%s) — %s\n", mv.Date, mv.Type, mv.Amount, mv.PaymentMethod, mv.Note)
+			}
+		}
+		return nil
+
+	case "create":
+		fs := flag.NewFlagSet("accounts create", flag.ContinueOnError)
+		id := fs.String("id", "", "ID / Documento único del cliente (obligatorio)")
+		name := fs.String("name", "", "Nombre completo del cliente (obligatorio)")
+		phone := fs.String("phone", "", "Teléfono de contacto")
+		payMethod := fs.String("payment-method", "Efectivo", "Método de pago acordado")
+		limit := fs.Int64("limit", 0, "Tope de crédito (entero)")
+		desc := fs.String("description", "", "Descripción o notas del cliente")
+		amount := fs.Int64("amount", 0, "Cargo inicial opcional si no se detallan artículos")
+		itemsJSON := fs.String("items-json", "", "Arreglo JSON opcional de artículos anotados")
+		note := fs.String("note", "", "Nota del movimiento inicial")
+		strictLimit := fs.Bool("strict-limit", false, "Bloquear guardado si supera el tope de crédito")
+		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive después de guardar")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		var items []accounts.MovementItemInput
+		if strings.TrimSpace(*itemsJSON) != "" {
+			if err := json.Unmarshal([]byte(*itemsJSON), &items); err != nil {
+				return fmt.Errorf("items-json inválido: %w", err)
+			}
+		}
+
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		enforceStrict := *strictLimit || strings.EqualFold(cfg.Credit.CreditLimitPolicy, "strict")
+		acc, err := mgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+			ID:                  *id,
+			Name:                *name,
+			Phone:               *phone,
+			PaymentMethod:       *payMethod,
+			CreditLimit:         *limit,
+			Description:         *desc,
+			InitialChargeAmount: *amount,
+			Note:                *note,
+			StrictLimit:         enforceStrict,
+			Items:               items,
+		})
+		if err != nil {
+			return err
+		}
+
+		var syncRes *sync.SyncResult
+		if *autoSync {
+			syncRes = syncAccountsBestEffort(cfg)
+		}
+
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"account":     acc,
+				"sync_result": syncRes,
+			})
+		}
+		fmt.Printf("[✓] Cuenta creada/actualizada en cuentas.db: [%s] %s | Saldo: $%d | Tope: $%d\n",
+			acc.ID, acc.Name, acc.CurrentBalance, acc.CreditLimit)
+		return nil
+
+	case "charge":
+		fs := flag.NewFlagSet("accounts charge", flag.ContinueOnError)
+		accountID := fs.String("account-id", "", "ID de la cuenta existente")
+		amount := fs.Int64("amount", 0, "Monto del cargo (si no se pasan artículos)")
+		itemsJSON := fs.String("items-json", "", "Arreglo JSON de artículos anotados")
+		payMethod := fs.String("payment-method", "", "Método de pago o referencia")
+		note := fs.String("note", "", "Nota del cargo")
+		strictLimit := fs.Bool("strict-limit", false, "Bloquear si supera el tope de crédito")
+		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		var items []accounts.MovementItemInput
+		if strings.TrimSpace(*itemsJSON) != "" {
+			if err := json.Unmarshal([]byte(*itemsJSON), &items); err != nil {
+				return fmt.Errorf("items-json inválido: %w", err)
+			}
+		}
+
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		enforceStrict := *strictLimit || strings.EqualFold(cfg.Credit.CreditLimitPolicy, "strict")
+		acc, err := mgr.RecordMovement(accounts.MovementRequest{
+			AccountID:     *accountID,
+			Type:          accounts.MovementCharge,
+			Amount:        *amount,
+			PaymentMethod: *payMethod,
+			Note:          *note,
+			StrictLimit:   enforceStrict,
+			Items:         items,
+		})
+		if err != nil {
+			return err
+		}
+
+		var syncRes *sync.SyncResult
+		if *autoSync {
+			syncRes = syncAccountsBestEffort(cfg)
+		}
+
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"account":     acc,
+				"sync_result": syncRes,
+			})
+		}
+		fmt.Printf("[✓] Cargo registrado en [%s] %s | Nuevo Saldo: $%d\n", acc.ID, acc.Name, acc.CurrentBalance)
+		return nil
+
+	case "pay", "abono":
+		fs := flag.NewFlagSet("accounts pay", flag.ContinueOnError)
+		accountID := fs.String("account-id", "", "ID de la cuenta")
+		amount := fs.Int64("amount", 0, "Monto del pago / abono recibido")
+		payMethod := fs.String("payment-method", "Efectivo", "Método con el que pagó el cliente")
+		note := fs.String("note", "Pago recibido en cuenta (sin afectar cierre Aronium)", "Nota del pago")
+		autoSync := fs.Bool("sync", true, "Sincronizar con Google Drive")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		acc, err := mgr.RecordMovement(accounts.MovementRequest{
+			AccountID:     *accountID,
+			Type:          accounts.MovementPayment,
+			Amount:        *amount,
+			PaymentMethod: *payMethod,
+			Note:          *note,
+		})
+		if err != nil {
+			return err
+		}
+
+		var syncRes *sync.SyncResult
+		if *autoSync {
+			syncRes = syncAccountsBestEffort(cfg)
+		}
+
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"account":     acc,
+				"sync_result": syncRes,
+			})
+		}
+		fmt.Printf("[✓] Pago/Abono de $%d registrado en [%s] %s | Nuevo Saldo: $%d\n",
+			*amount, acc.ID, acc.Name, acc.CurrentBalance)
+		return nil
+
+	case "status":
+		fs := flag.NewFlagSet("accounts status", flag.ContinueOnError)
+		accountID := fs.String("account-id", "", "ID de la cuenta")
+		state := fs.String("state", "ACTIVA", "Estado: ACTIVA, BLOQUEADA, CERRADA")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+		if err := mgr.UpdateStatus(*accountID, accounts.AccountStatus(strings.ToUpper(*state))); err != nil {
+			return err
+		}
+		acc, _ := mgr.GetAccount(*accountID)
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(acc)
+		}
+		fmt.Printf("[✓] Estado de cuenta [%s] actualizado a %s\n", *accountID, strings.ToUpper(*state))
+		return nil
+
+	case "statement":
+		fs := flag.NewFlagSet("accounts statement", flag.ContinueOnError)
+		accountID := fs.String("account-id", "", "ID de la cuenta")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+		targetID := *accountID
+		if targetID == "" && len(fs.Args()) > 0 {
+			targetID = fs.Args()[0]
+		}
+		acc, err := mgr.GetAccount(targetID)
+		if err != nil {
+			return err
+		}
+		stmt := accounts.GenerateStatement(*acc, cfg.StoreName)
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"account":   acc,
+				"statement": stmt,
+			})
+		}
+		fmt.Println(stmt)
+		return nil
+
+	default:
+		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, status, statement)", sub)
+	}
+}
+
+func syncAccountsBestEffort(cfg *config.Config) *sync.SyncResult {
+	ctx := context.Background()
+	stateConn, _ := db.OpenStateDB(cfg.StateDBPath)
+	if stateConn != nil {
+		defer stateConn.Close()
+	}
+	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	if err == nil && posConn != nil {
+		defer posConn.Close()
+		driveMgr := sync.NewDriveManager(cfg, posConn, stateConn)
+		res, sErr := driveMgr.SyncAll(ctx)
+		if sErr == nil {
+			return res
+		}
+	}
+
+	// Fallback if pos.db is not connected yet: still write Cuentas workbook + cuentas_backup.db
+	accMgr, err := accounts.NewManager(cfg.AccountsDBPath)
+	if err != nil {
+		return nil
+	}
+	defer accMgr.Close()
+	accLedger, _ := accMgr.ListAccounts("")
+
+	syncRoot := filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, cfg.GoogleDrive.RootFolderName)
+	creditDir := filepath.Join(syncRoot, "Cuentas_Credito")
+	_ = os.MkdirAll(creditDir, 0755)
+	sheets := sync.BuildMasterWorkbookSheets(nil, accLedger, nil, cfg.GoogleDrive.PerCustomerSheets)
+	xlsxBytes, err := sync.BuildXLSXBytes(sheets)
+	if err != nil {
+		return nil
+	}
+	wbName := cfg.GoogleDrive.MasterWorkbookName
+	if wbName == "" {
+		wbName = "Aronium_Inventario_y_Cuentas_Credito.xlsx"
+	}
+	masterPath := filepath.Join(syncRoot, wbName)
+	_ = sync.WriteAtomicFile(masterPath, xlsxBytes)
+	backupPath := filepath.Join(creditDir, "cuentas_backup.db")
+	_ = accMgr.OnlineBackupAccountsDB(ctx, backupPath)
+	return &sync.SyncResult{
+		Timestamp:          time.Now().UTC(),
+		MasterWorkbookPath: masterPath,
+		AccountsBackupPath: backupPath,
+	}
+}
+
+// 18. catalog (Live barcode & product search from pos.db mode=ro — TODO-103, TODO-105)
+func runCatalog(args []string) error {
+	sub := "search"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = strings.ToLower(args[0])
+		args = args[1:]
+	}
+	if sub != "search" && sub != "list" {
+		return fmt.Errorf("subcomando de catalog desconocido '%s' (usa: search)", sub)
+	}
+
+	fs := flag.NewFlagSet("catalog search", flag.ContinueOnError)
+	query := fs.String("query", "", "Texto de búsqueda (nombre, SKU o código de barras)")
+	barcode := fs.String("barcode", "", "Código de barras exacto escaneado por lector HID")
+	limit := fs.Int("limit", 40, "Máximo de resultados a devolver")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+	cfg, _, err := loadConfigWithFlags(fs, args)
+	if err != nil {
+		return err
+	}
+
+	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	if err != nil {
+		return err
+	}
+	defer posConn.Close()
+
+	match, err := db.SearchCatalogForScanner(posConn, cfg.PosDBPath, *query, *barcode, *limit)
+	if err != nil {
+		return err
+	}
+
+	// Enrich with committed units from cuentas.db so UI displays Net Stock per product
+	committed := make(map[int64]float64)
+	if strings.TrimSpace(cfg.AccountsDBPath) != "" {
+		if _, err := os.Stat(cfg.AccountsDBPath); err == nil {
+			if accMgr, err := accounts.NewManager(cfg.AccountsDBPath); err == nil {
+				if cu, err := accMgr.ComputePendingUnitsByProduct(); err == nil {
+					committed = cu
+				}
+				_ = accMgr.Close()
+			}
+		}
+	}
+
+	type enrichedCatalogItem struct {
+		db.Product
+		CommittedQty float64 `json:"committed_in_accounts_qty"`
+		NetStock     float64 `json:"net_stock_quantity"`
+	}
+	enrich := func(p db.Product) enrichedCatalogItem {
+		cQty := committed[p.ID]
+		return enrichedCatalogItem{
+			Product:      p,
+			CommittedQty: cQty,
+			NetStock:     p.StockQuantity - cQty,
+		}
+	}
+
+	if *jsonOut {
+		var exact *enrichedCatalogItem
+		if match.ExactBarcodeMatch != nil {
+			e := enrich(*match.ExactBarcodeMatch)
+			exact = &e
+		}
+		enrichedList := make([]enrichedCatalogItem, 0, len(match.Matches))
+		for _, p := range match.Matches {
+			enrichedList = append(enrichedList, enrich(p))
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"exact_match":  exact,
+			"matches":      enrichedList,
+			"pos_db_mtime": match.PosDBMTime,
+		})
+	}
+
+	fmt.Printf("=== CATÁLOGO EN VIVO DE ARONIUM (%d coincidencias) ===\n", len(match.Matches))
+	for _, p := range match.Matches {
+		e := enrich(p)
+		fmt.Printf("• [%-8s | BC:%-13s] %-26s | Precio: $%8.2f | Stock POS: %.2f | Neto: %.2f\n",
+			e.Code, e.Barcode, e.Name, e.Price, e.StockQuantity, e.NetStock)
+	}
+	return nil
+}
+
+// 19. config (Inspect, select, and persist pos.db / cuentas.db paths — TODO-105, TODO-108)
+func runConfigCmd(args []string) error {
+	sub := "get"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = strings.ToLower(args[0])
+		args = args[1:]
+	}
+
+	switch sub {
+	case "get":
+		fs := flag.NewFlagSet("config get", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		_, posErr := os.Stat(cfg.PosDBPath)
+		_, accErr := os.Stat(cfg.AccountsDBPath)
+		defaultPos := config.DetectAroniumPosDB()
+		_, defPosErr := os.Stat(defaultPos)
+
+		payload := map[string]any{
+			"config_path":            cfgPath,
+			"config":                 cfg,
+			"default_pos_db_path":    defaultPos,
+			"default_pos_db_exists":  defPosErr == nil,
+			"pos_db_exists":          posErr == nil,
+			"accounts_db_exists":     accErr == nil,
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(payload)
+		}
+		fmt.Printf("Config: %s\npos.db: %s (existe=%v)\ncuentas.db: %s (existe=%v)\n",
+			cfgPath, cfg.PosDBPath, posErr == nil, cfg.AccountsDBPath, accErr == nil)
+		return nil
+
+	case "set-db":
+		fs := flag.NewFlagSet("config set-db", flag.ContinueOnError)
+		newPosDB := fs.String("set-pos-db", "", "Nueva ruta para pos.db de Aronium Lite")
+		newAccDB := fs.String("set-accounts-db", "", "Nueva ruta para cuentas.db")
+		useDefaultPos := fs.Bool("use-default-pos", false, "Restaurar autodetección por defecto de pos.db")
+		createDemoPos := fs.Bool("create-demo-pos", false, "Crear pos.db de demostración si no existe")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		if *useDefaultPos {
+			os.Unsetenv("ARONIUM_POS_DB")
+			cfg.PosDBPath = config.DetectAroniumPosDB()
+		} else if strings.TrimSpace(*newPosDB) != "" {
+			cfg.PosDBPath = strings.TrimSpace(*newPosDB)
+		}
+		if strings.TrimSpace(*newAccDB) != "" {
+			cfg.AccountsDBPath = strings.TrimSpace(*newAccDB)
+		}
+		if *createDemoPos {
+			if _, err := os.Stat(cfg.PosDBPath); os.IsNotExist(err) {
+				if err := testutil.CreateSyntheticPosDB(cfg.PosDBPath); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Ensure cuentas.db exists and is migrated
+		if accConn, err := accounts.OpenAccountsDB(cfg.AccountsDBPath); err != nil {
+			return fmt.Errorf("no se pudo inicializar cuentas.db en %s: %w", cfg.AccountsDBPath, err)
+		} else {
+			_ = accConn.Close()
+		}
+
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+
+		rep, _ := db.RunDoctor(context.Background(), cfg.PosDBPath, cfg.StateDBPath, cfg.CashRegisterID, cfg.GoogleDrive.TokenVaultPath)
+		if rep != nil {
+			rep.AccountsDBPath = cfg.AccountsDBPath
+			rep.AccountsDBReady = true
+		}
+
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"config_path": cfgPath,
+				"config":      cfg,
+				"doctor":      rep,
+			})
+		}
+		fmt.Printf("[✓] Rutas guardadas en %s (pos.db=%s, cuentas.db=%s)\n", cfgPath, cfg.PosDBPath, cfg.AccountsDBPath)
+		return nil
+
+	case "pick-db":
+		fs := flag.NewFlagSet("config pick-db", flag.ContinueOnError)
+		kind := fs.String("kind", "pos", "Tipo de base de datos a elegir: pos o accounts")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		selectedPath, err := openOSFilePicker(*kind)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"selected": selectedPath != "",
+				"path":     selectedPath,
+			})
+		}
+		fmt.Println(selectedPath)
+		return nil
+
+	default:
+		return fmt.Errorf("subcomando de config desconocido '%s' (usa: get, set-db, pick-db)", sub)
+	}
+}
+
+func openOSFilePicker(kind string) (string, error) {
+	title := "Selecciona el archivo pos.db de Aronium Lite"
+	if kind == "accounts" {
+		title = "Selecciona el archivo cuentas.db"
+	}
+	if runtime.GOOS == "windows" {
+		ps := fmt.Sprintf(`Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Title = '%s'; $f.Filter = 'SQLite Database (*.db)|*.db|Todos los archivos (*.*)|*.*'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }`, title)
+		out, err := exec.Command("powershell.exe", "-NoProfile", "-STA", "-Command", ps).Output()
+		if err != nil {
+			return "", fmt.Errorf("no se pudo abrir el selector de archivos de Windows: %w", err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	if runtime.GOOS == "darwin" {
+		script := fmt.Sprintf(`POSIX path of (choose file with prompt "%s")`, title)
+		out, err := exec.Command("osascript", "-e", script).Output()
+		if err != nil {
+			return "", nil
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	return "", fmt.Errorf("selector gráfico nativo disponible en Windows y macOS; ingresa la ruta manualmente")
+}
+

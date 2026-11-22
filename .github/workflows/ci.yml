@@ -39,4 +39,7 @@ jobs:
           go test -v -race ./...
 
       - name: Cross-Compile Windows x64, Windows x86 (CLI + Aronium Utility UI + Unified Installer)
-        run: ./Scripts/package_release.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osslsigncode
+          ./Scripts/package_release.sh

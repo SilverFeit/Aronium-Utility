@@ -3,13 +3,14 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 
 echo ==========================================================================
-echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.1.0 (CLI + Aronium Utility UI)
+echo   INSTALADOR UNIFICADO DE ARONIUM UTILITY v1.2.0 (CLI + Aronium Utility UI)
 echo ==========================================================================
 
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\AroniumUtility"
 set "DATA_DIR=%LOCALAPPDATA%\AroniumUtility"
 set "POS_DB=%LOCALAPPDATA%\Aronium\Data\pos.db"
 set "STATE_DB=%DATA_DIR%\aronium_utility_state.db"
+set "ACCOUNTS_DB=%DATA_DIR%\cuentas.db"
 set "CONFIG_FILE=%DATA_DIR%\aronium-util.yaml"
 set "STORE_ID=STORE-01"
 set "REGISTER_ID=POS-01"
@@ -36,6 +37,7 @@ reg add "HKCU\Environment" /v ARONIUM_UTIL_HOME /t REG_EXPAND_SZ /d "%DATA_DIR%"
 reg add "HKCU\Environment" /v ARONIUM_UTIL_CONFIG /t REG_EXPAND_SZ /d "%CONFIG_FILE%" /f >nul
 reg add "HKCU\Environment" /v ARONIUM_POS_DB /t REG_EXPAND_SZ /d "%POS_DB%" /f >nul
 reg add "HKCU\Environment" /v ARONIUM_STATE_DB /t REG_EXPAND_SZ /d "%STATE_DB%" /f >nul
+reg add "HKCU\Environment" /v ARONIUM_ACCOUNTS_DB /t REG_EXPAND_SZ /d "%ACCOUNTS_DB%" /f >nul
 reg add "HKCU\Environment" /v ARONIUM_STORE_ID /t REG_SZ /d "%STORE_ID%" /f >nul
 reg add "HKCU\Environment" /v ARONIUM_REGISTER_ID /t REG_SZ /d "%REGISTER_ID%" /f >nul
 reg add "HKCU\Environment" /v ARONIUM_CLI_BIN /t REG_EXPAND_SZ /d "%INSTALL_DIR%\aronium-util.exe" /f >nul
@@ -43,10 +45,10 @@ reg add "HKCU\Environment" /v ARONIUM_UI_BIN /t REG_EXPAND_SZ /d "%INSTALL_DIR%\
 
 powershell -NoProfile -NonInteractive -Command "$dir = '%INSTALL_DIR%'; $cur = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not $cur) { $cur = '' }; $parts = $cur -split ';' | Where-Object { $_ -ne '' }; if ($parts -notcontains $dir) { [Environment]::SetEnvironmentVariable('Path', (($parts + $dir) -join ';'), 'User') }"
 
-echo [4/5] Inicializando configuracion aronium-util.yaml (Caja: %REGISTER_ID%)...
-"%INSTALL_DIR%\aronium-util.exe" init --config "%CONFIG_FILE%" --pos-db "%POS_DB%" --store-id "%STORE_ID%" --register "%REGISTER_ID%"
+echo [4/5] Inicializando configuracion aronium-util.yaml y base de cuentas (Caja: %REGISTER_ID%)...
+"%INSTALL_DIR%\aronium-util.exe" init --config "%CONFIG_FILE%" --pos-db "%POS_DB%" --accounts-db "%ACCOUNTS_DB%" --store-id "%STORE_ID%" --register "%REGISTER_ID%"
 
-echo [5/5] Registrando arranque automatico del CLI al encender Windows...
+echo [5/5] Registrando arranque automatico del CLI (Startup .lnk) al encender Windows...
 "%INSTALL_DIR%\aronium-util.exe" service install --config "%CONFIG_FILE%"
 
 echo.

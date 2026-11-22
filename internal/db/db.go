@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -602,15 +603,17 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 	return out, nil
 }
 
-// ListProductsWithStock returns the complete product catalog joined with ProductGroup, Barcode, and Stock (TODO-022).
+// ListProductsWithStock returns the complete product catalog joined with ProductGroup, all Barcodes, and Stock (TODO-022, TODO-103).
 func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 	return WithRetry(5, func() ([]Product, error) {
 		hasBarcode := tableExists(posDB, "Barcode")
 		barcodeSelect := "''"
+		allBarcodesSelect := "''"
 		barcodeJoin := ""
 		if hasBarcode {
 			barcodeSelect = "COALESCE(bc.FirstBarcode, '')"
-			barcodeJoin = "LEFT JOIN (SELECT ProductId, MIN(Value) AS FirstBarcode FROM Barcode GROUP BY ProductId) bc ON bc.ProductId = p.Id"
+			allBarcodesSelect = "COALESCE(bc.AllBarcodes, '')"
+			barcodeJoin = "LEFT JOIN (SELECT ProductId, MIN(Value) AS FirstBarcode, GROUP_CONCAT(Value, '|') AS AllBarcodes FROM Barcode GROUP BY ProductId) bc ON bc.ProductId = p.Id"
 		}
 
 		query := fmt.Sprintf(`
@@ -620,6 +623,7 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 				COALESCE(pg.Name, 'General'),
 				COALESCE(p.Name, ''),
 				COALESCE(p.Code, ''),
+				%s,
 				%s,
 				COALESCE(p.PLU, 0),
 				COALESCE(p.MeasurementUnit, 'UND'),
@@ -634,7 +638,7 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 			LEFT JOIN (SELECT ProductId, SUM(Quantity) AS TotalQty FROM Stock GROUP BY ProductId) st ON st.ProductId = p.Id
 			%s
 			ORDER BY p.Name ASC;
-		`, barcodeSelect, barcodeJoin)
+		`, barcodeSelect, allBarcodesSelect, barcodeJoin)
 
 		rows, err := posDB.Query(query)
 		if err != nil {
@@ -646,9 +650,10 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 		for rows.Next() {
 			var p Product
 			var isService, isEnabled int
+			var allBarcodes string
 			if err := rows.Scan(
 				&p.ID, &p.ProductGroupID, &p.ProductGroupName,
-				&p.Name, &p.Code, &p.Barcode, &p.PLU,
+				&p.Name, &p.Code, &p.Barcode, &allBarcodes, &p.PLU,
 				&p.MeasurementUnit, &p.Price, &p.Cost, &p.Markup,
 				&isService, &isEnabled, &p.StockQuantity,
 			); err != nil {
@@ -656,10 +661,169 @@ func ListProductsWithStock(posDB *sql.DB) ([]Product, error) {
 			}
 			p.IsService = isService != 0
 			p.IsEnabled = isEnabled != 0
+			if allBarcodes != "" {
+				for _, b := range strings.Split(allBarcodes, "|") {
+					if trimmed := strings.TrimSpace(b); trimmed != "" {
+						p.Barcodes = append(p.Barcodes, trimmed)
+					}
+				}
+			}
 			products = append(products, p)
 		}
 		return products, nil
 	})
+}
+
+// CatalogMatch bundles barcode scanner exact matches and partial text matches from pos.db (TODO-103).
+type CatalogMatch struct {
+	ExactBarcodeMatch *Product  `json:"exact_match,omitempty"`
+	Matches           []Product `json:"matches"`
+	PosDBMTime        string    `json:"pos_db_mtime"`
+}
+
+// CatalogCache caches the live product index in memory and invalidates automatically when pos.db or pos.db-wal changes (TODO-103).
+type CatalogCache struct {
+	mu           sync.RWMutex
+	posDBPath    string
+	lastModTime  time.Time
+	products     []Product
+	byBarcode    map[string]int
+	byCode       map[string]int
+}
+
+func NewCatalogCache(posDBPath string) *CatalogCache {
+	return &CatalogCache{
+		posDBPath: posDBPath,
+		byBarcode: make(map[string]int),
+		byCode:    make(map[string]int),
+	}
+}
+
+func currentDBMTime(posDBPath string) time.Time {
+	var maxT time.Time
+	for _, p := range []string{posDBPath, posDBPath + "-wal"} {
+		if st, err := os.Stat(p); err == nil {
+			if st.ModTime().After(maxT) {
+				maxT = st.ModTime()
+			}
+		}
+	}
+	return maxT
+}
+
+// GetProducts returns the live product catalog, reloading from pos.db only if mtime changed.
+func (c *CatalogCache) GetProducts(posDB *sql.DB) ([]Product, time.Time, error) {
+	mtime := currentDBMTime(c.posDBPath)
+
+	c.mu.RLock()
+	if len(c.products) > 0 && !mtime.After(c.lastModTime) {
+		prods := c.products
+		lastM := c.lastModTime
+		c.mu.RUnlock()
+		return prods, lastM, nil
+	}
+	c.mu.RUnlock()
+
+	products, err := ListProductsWithStock(posDB)
+	if err != nil {
+		return nil, mtime, err
+	}
+
+	byBarcode := make(map[string]int, len(products))
+	byCode := make(map[string]int, len(products))
+	for i, p := range products {
+		if p.Barcode != "" {
+			byBarcode[strings.ToLower(strings.TrimSpace(p.Barcode))] = i
+		}
+		for _, bc := range p.Barcodes {
+			byBarcode[strings.ToLower(strings.TrimSpace(bc))] = i
+		}
+		if p.Code != "" {
+			byCode[strings.ToLower(strings.TrimSpace(p.Code))] = i
+		}
+	}
+
+	c.mu.Lock()
+	c.products = products
+	c.byBarcode = byBarcode
+	c.byCode = byCode
+	c.lastModTime = mtime
+	c.mu.Unlock()
+
+	return products, mtime, nil
+}
+
+// Search performs <10ms barcode exact lookup and partial name/SKU matching over the mtime-cached catalog (TODO-103).
+func (c *CatalogCache) Search(posDB *sql.DB, query string, exactBarcode string, limit int) (*CatalogMatch, error) {
+	products, mtime, err := c.GetProducts(posDB)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	res := &CatalogMatch{
+		PosDBMTime: mtime.UTC().Format(time.RFC3339),
+	}
+
+	// Check exact barcode or SKU code (for USB/Bluetooth HID scanner Enter events)
+	lookupCode := strings.ToLower(strings.TrimSpace(exactBarcode))
+	if lookupCode == "" {
+		lookupCode = strings.ToLower(strings.TrimSpace(query))
+	}
+	if lookupCode != "" {
+		c.mu.RLock()
+		if idx, ok := c.byBarcode[lookupCode]; ok {
+			p := products[idx]
+			res.ExactBarcodeMatch = &p
+		} else if idx, ok := c.byCode[lookupCode]; ok {
+			p := products[idx]
+			res.ExactBarcodeMatch = &p
+		}
+		c.mu.RUnlock()
+	}
+
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" && exactBarcode != "" {
+		q = strings.ToLower(strings.TrimSpace(exactBarcode))
+	}
+
+	for _, p := range products {
+		if !p.IsEnabled {
+			continue
+		}
+		if q == "" {
+			res.Matches = append(res.Matches, p)
+		} else {
+			matched := strings.Contains(strings.ToLower(p.Name), q) ||
+				strings.Contains(strings.ToLower(p.Code), q) ||
+				strings.Contains(strings.ToLower(p.Barcode), q) ||
+				strings.Contains(strings.ToLower(p.ProductGroupName), q)
+			if !matched {
+				for _, bc := range p.Barcodes {
+					if strings.Contains(strings.ToLower(bc), q) {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				res.Matches = append(res.Matches, p)
+			}
+		}
+		if len(res.Matches) >= limit {
+			break
+		}
+	}
+
+	return res, nil
+}
+
+// SearchCatalogForScanner searches live products in pos.db supporting both exact barcode/SKU match and partial text search (TODO-103).
+func SearchCatalogForScanner(posDB *sql.DB, posDBPath, query, exactBarcode string, limit int) (*CatalogMatch, error) {
+	cache := NewCatalogCache(posDBPath)
+	return cache.Search(posDB, query, exactBarcode, limit)
 }
 
 func tableExists(conn *sql.DB, tableName string) bool {

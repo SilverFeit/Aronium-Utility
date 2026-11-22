@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
 	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/inventory"
@@ -24,6 +26,7 @@ type DashboardSnapshot struct {
 	SalesByRegister  []registers.RegisterSalesSummary `json:"sales_by_register"`
 	InventorySummary *inventory.InventoryReport       `json:"inventory_summary"`
 	CreditPortfolio  *credit.LedgerReport             `json:"credit_portfolio"`
+	AccountsSummary  *accounts.AccountsLedgerReport   `json:"accounts_summary,omitempty"`
 }
 
 // Console provides the read-only Administrative Console (TUI + Local HTTP Web Dashboard on localhost:8080).
@@ -60,6 +63,16 @@ func (c *Console) BuildSnapshot(filterRegister string) (*DashboardSnapshot, erro
 		return nil, err
 	}
 
+	var accSummary *accounts.AccountsLedgerReport
+	if strings.TrimSpace(c.Cfg.AccountsDBPath) != "" {
+		if _, statErr := os.Stat(c.Cfg.AccountsDBPath); statErr == nil {
+			if accMgr, accErr := accounts.NewManager(c.Cfg.AccountsDBPath); accErr == nil {
+				accSummary, _ = accMgr.ListAccounts("")
+				_ = accMgr.Close()
+			}
+		}
+	}
+
 	return &DashboardSnapshot{
 		GeneratedAt:      time.Now().UTC(),
 		StoreID:          c.Cfg.StoreID,
@@ -68,6 +81,7 @@ func (c *Console) BuildSnapshot(filterRegister string) (*DashboardSnapshot, erro
 		SalesByRegister:  sales,
 		InventorySummary: invRep,
 		CreditPortfolio:  creditRep,
+		AccountsSummary:  accSummary,
 	}, nil
 }
 

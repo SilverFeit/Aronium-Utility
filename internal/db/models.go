@@ -101,28 +101,29 @@ type PaymentType struct {
 }
 
 type Product struct {
-	ID                int64   `json:"id"`
-	ProductGroupID    int64   `json:"product_group_id"`
-	ProductGroupName  string  `json:"product_group_name"`
-	Name              string  `json:"name"`
-	Code              string  `json:"code"`
-	Barcode           string  `json:"barcode"`
-	PLU               int64   `json:"plu"`
-	MeasurementUnit   string  `json:"measurement_unit"`
-	Price             float64 `json:"price"`
-	IsTaxInclusive    bool    `json:"is_tax_inclusive"`
-	CurrencyID        int64   `json:"currency_id"`
-	IsPriceChangeAllowed bool `json:"is_price_change_allowed"`
-	IsService         bool    `json:"is_service"`
-	IsUsingDefaultQty bool    `json:"is_using_default_quantity"`
-	IsEnabled         bool    `json:"is_enabled"`
-	Description       string  `json:"description"`
-	DateCreated       string  `json:"date_created"`
-	DateUpdated       string  `json:"date_updated"`
-	Cost              float64 `json:"cost"`
-	Markup            float64 `json:"markup"`
-	StockQuantity     float64 `json:"stock_quantity"`
-	WarehouseName     string  `json:"warehouse_name"`
+	ID                   int64    `json:"id"`
+	ProductGroupID       int64    `json:"product_group_id"`
+	ProductGroupName     string   `json:"product_group_name"`
+	Name                 string   `json:"name"`
+	Code                 string   `json:"code"`
+	Barcode              string   `json:"barcode"`
+	Barcodes             []string `json:"barcodes,omitempty"`
+	PLU                  int64    `json:"plu"`
+	MeasurementUnit      string   `json:"measurement_unit"`
+	Price                float64  `json:"price"`
+	IsTaxInclusive       bool     `json:"is_tax_inclusive"`
+	CurrencyID           int64    `json:"currency_id"`
+	IsPriceChangeAllowed bool     `json:"is_price_change_allowed"`
+	IsService            bool     `json:"is_service"`
+	IsUsingDefaultQty    bool     `json:"is_using_default_quantity"`
+	IsEnabled            bool     `json:"is_enabled"`
+	Description          string   `json:"description"`
+	DateCreated          string   `json:"date_created"`
+	DateUpdated          string   `json:"date_updated"`
+	Cost                 float64  `json:"cost"`
+	Markup               float64  `json:"markup"`
+	StockQuantity        float64  `json:"stock_quantity"`
+	WarehouseName        string   `json:"warehouse_name"`
 }
 
 // Extended State Database Models (aronium_utility_state.db - TODO-010)
@@ -171,6 +172,8 @@ type DoctorReport struct {
 	MissingCoreTables     []string          `json:"missing_core_tables"`
 	StateDBPath           string            `json:"state_db_path"`
 	StateDBReady          bool              `json:"state_db_ready"`
+	AccountsDBPath        string            `json:"accounts_db_path"`
+	AccountsDBReady       bool              `json:"accounts_db_ready"`
 	CashRegisterID        string            `json:"cash_register_id"`
 	RegisterIDConflict    bool              `json:"register_id_conflict"`
 	GDriveConfigured      bool              `json:"gdrive_configured"`

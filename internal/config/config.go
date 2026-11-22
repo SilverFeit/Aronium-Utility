@@ -25,6 +25,7 @@ type Config struct {
 	CashRegisterID   string          `yaml:"cash_register_id" json:"cash_register_id"`
 	CashRegisterName string          `yaml:"cash_register_name" json:"cash_register_name"`
 	PosDBPath        string          `yaml:"pos_db_path" json:"pos_db_path"`
+	AccountsDBPath   string          `yaml:"accounts_db_path" json:"accounts_db_path"`
 	StateDBPath      string          `yaml:"state_db_path" json:"state_db_path"`
 	Watch            WatchConfig     `yaml:"watch" json:"watch"`
 	Credit           CreditConfig    `yaml:"credit" json:"credit"`
@@ -51,6 +52,7 @@ type CreditConfig struct {
 	DefaultCreditLimit  float64  `yaml:"default_credit_limit" json:"default_credit_limit"`
 	DefaultDueDays      int      `yaml:"default_due_days" json:"default_due_days"`
 	RouteByCustomerName bool     `yaml:"route_by_customer_name" json:"route_by_customer_name"`
+	CreditLimitPolicy   string   `yaml:"credit_limit_policy" json:"credit_limit_policy"` // "warn" or "strict"
 }
 
 type InventoryConfig struct {
@@ -198,6 +200,7 @@ func DefaultConfig() *Config {
 		CashRegisterID:   "POS-01",
 		CashRegisterName: fmt.Sprintf("Caja Principal (%s)", hostname),
 		PosDBPath:        DetectAroniumPosDB(),
+		AccountsDBPath:   filepath.Join(appDir, "cuentas.db"),
 		StateDBPath:      filepath.Join(appDir, "aronium_utility_state.db"),
 		Watch: WatchConfig{
 			PollIntervalMs: 3000,
@@ -220,6 +223,7 @@ func DefaultConfig() *Config {
 			DefaultCreditLimit:  500.0,
 			DefaultDueDays:      15,
 			RouteByCustomerName: true,
+			CreditLimitPolicy:   "warn",
 		},
 		Inventory: InventoryConfig{
 			DefaultMinStock:       5,
@@ -298,6 +302,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) ApplyEnvOverrides() {
 	if v := os.Getenv("ARONIUM_POS_DB"); v != "" {
 		c.PosDBPath = v
+	}
+	if v := os.Getenv("ARONIUM_ACCOUNTS_DB"); v != "" {
+		c.AccountsDBPath = v
 	}
 	if v := os.Getenv("ARONIUM_STATE_DB"); v != "" {
 		c.StateDBPath = v

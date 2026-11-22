@@ -53,21 +53,24 @@ func (m *Manager) Install() (string, error) {
 		return fmt.Sprintf("Service manifest registered at %s", unitPath), nil
 	}
 
-	// Always register in HKCU\Software\Microsoft\Windows\CurrentVersion\Run so the CLI starts immediately when the PC boots/logs on
+	// Register standard Windows Startup Folder shortcut (.lnk) so the CLI launches on logon without triggering Registry Run AV heuristics
+	shortcutPath, shortcutErr := m.installStartupShortcut()
 	binCmd := fmt.Sprintf(`"%s" watch --config "%s"`, m.BinaryPath, m.ConfigPath)
-	_ = exec.Command("reg.exe", "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", ServiceName, "/t", "REG_SZ", "/d", binCmd, "/f").Run()
 
-	// Also attempt Windows Service (sc.exe) or Scheduled Task (schtasks.exe)
+	// Also attempt Windows Service (sc.exe) or Scheduled Task (schtasks.exe) when elevated
 	scCmd := exec.Command("sc.exe", "create", ServiceName, "binPath=", binCmd, "start=", "auto", "DisplayName=", "Aronium Utility Sync Service")
 	if out, err := scCmd.CombinedOutput(); err == nil {
-		return fmt.Sprintf("Windows Service '%s' & Auto-Start registered: %s", ServiceName, strings.TrimSpace(string(out))), nil
+		return fmt.Sprintf("Windows Service '%s' & Startup Shortcut registered: %s", ServiceName, strings.TrimSpace(string(out))), nil
 	}
 
 	taskCmd := exec.Command("schtasks.exe", "/Create", "/F", "/SC", "ONLOGON", "/TN", TaskName, "/TR", binCmd)
 	if out, err := taskCmd.CombinedOutput(); err == nil {
-		return fmt.Sprintf("Windows Startup Task '%s' & Registry Run registered: %s", TaskName, strings.TrimSpace(string(out))), nil
+		return fmt.Sprintf("Windows Startup Task '%s' & Startup Shortcut registered: %s", TaskName, strings.TrimSpace(string(out))), nil
 	}
-	return fmt.Sprintf("Windows Startup Registry Run '%s' registered (%s)", ServiceName, binCmd), nil
+	if shortcutErr != nil {
+		return "", fmt.Errorf("failed to register Windows Startup Shortcut: %w", shortcutErr)
+	}
+	return fmt.Sprintf("Windows Startup Shortcut registered (%s)", shortcutPath), nil
 }
 
 // Start launches the background service or daemon process.
@@ -100,6 +103,51 @@ func (m *Manager) Stop() (string, error) {
 }
 
 // Status checks the current status of the service.
+func StartupShortcutPath() string {
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return ""
+	}
+	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Aronium Utility Watcher.lnk")
+}
+
+func (m *Manager) installStartupShortcut() (string, error) {
+	shortcutPath := StartupShortcutPath()
+	if shortcutPath == "" {
+		return "", fmt.Errorf("APPDATA environment variable not set")
+	}
+	_ = os.MkdirAll(filepath.Dir(shortcutPath), 0o755)
+	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	psScript := fmt.Sprintf(
+		"$ws = New-Object -ComObject WScript.Shell; "+
+			"$s = $ws.CreateShortcut('%s'); "+
+			"$s.TargetPath = '%s'; "+
+			"$s.Arguments = 'watch --config \"%s\"'; "+
+			"$s.WorkingDirectory = '%s'; "+
+			"$s.WindowStyle = 7; "+
+			"$s.IconLocation = '%s,0'; "+
+			"$s.Description = 'Aronium Utility Background Watcher & Sync'; "+
+			"$s.Save()",
+		esc(shortcutPath), esc(m.BinaryPath), esc(m.ConfigPath), esc(filepath.Dir(m.BinaryPath)), esc(m.BinaryPath),
+	)
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return shortcutPath, nil
+}
+
+func (m *Manager) RemoveStartupShortcut() error {
+	shortcutPath := StartupShortcutPath()
+	if shortcutPath == "" {
+		return nil
+	}
+	if err := os.Remove(shortcutPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) Status() string {
 	if runtime.GOOS == "windows" {
 		if out, err := exec.Command("sc.exe", "query", ServiceName).CombinedOutput(); err == nil {
@@ -107,6 +155,11 @@ func (m *Manager) Status() string {
 		}
 		if out, err := exec.Command("schtasks.exe", "/Query", "/TN", TaskName).CombinedOutput(); err == nil {
 			return strings.TrimSpace(string(out))
+		}
+		if sp := StartupShortcutPath(); sp != "" {
+			if _, err := os.Stat(sp); err == nil {
+				return fmt.Sprintf("Windows Startup Shortcut active: %s", sp)
+			}
 		}
 	}
 	unitPath := filepath.Join(m.AppDir, "aronium-utility.service")

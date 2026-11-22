@@ -13,10 +13,15 @@ Esta guía explica cómo instalar y utilizar **Aronium Utility** (el motor CLI e
    ```
 3. El instalador realiza automáticamente cinco tareas en una sola instalación:
    - Instala el motor CLI **`aronium-util.exe`** en `%LOCALAPPDATA%\Programs\AroniumUtility\aronium-util.exe`.
-   - Instala la aplicación gráfica **`aronium-utility-ui.exe` (Aronium Utility UI)** en `%LOCALAPPDATA%\Programs\AroniumUtility\aronium-utility-ui.exe` y crea su acceso directo en el Escritorio.
-   - Agrega la carpeta al **`PATH`** del usuario en Windows y configura las variables de entorno (`ARONIUM_UTIL_HOME`, `ARONIUM_UTIL_CONFIG`, `ARONIUM_POS_DB`, `ARONIUM_STATE_DB`, `ARONIUM_STORE_ID`, `ARONIUM_REGISTER_ID`, `ARONIUM_CLI_BIN`, `ARONIUM_UI_BIN`).
-   - Detecta automáticamente `%LOCALAPPDATA%\Aronium\Data\pos.db` y genera `%LOCALAPPDATA%\AroniumUtility\aronium-util.yaml`.
-   - Registra `aronium-util.exe watch` en el arranque de Windows para que **el CLI se ejecute automáticamente apenas se encienda el equipo** y procese las transacciones en vivo sobre `pos.db`.
+   - Instala la aplicación gráfica **`aronium-utility-ui.exe` (Aronium Utility UI)** en `%LOCALAPPDATA%\Programs\AroniumUtility\aronium-utility-ui.exe` y crea su acceso directo en el Escritorio con su ícono nativo.
+   - Agrega la carpeta al **`PATH`** del usuario en Windows y configura las variables de entorno (`ARONIUM_UTIL_HOME`, `ARONIUM_UTIL_CONFIG`, `ARONIUM_POS_DB`, `ARONIUM_STATE_DB`, `ARONIUM_ACCOUNTS_DB`, `ARONIUM_STORE_ID`, `ARONIUM_REGISTER_ID`, `ARONIUM_CLI_BIN`, `ARONIUM_UI_BIN`).
+   - Detecta automáticamente `%LOCALAPPDATA%\Aronium\Data\pos.db`, genera `%LOCALAPPDATA%\AroniumUtility\aronium-util.yaml` e inicializa la base dedicada **`%LOCALAPPDATA%\AroniumUtility\cuentas.db`** (modo SQLite WAL).
+   - Registra `aronium-util.exe watch` mediante un acceso directo estándar en la carpeta de inicio de Windows (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aronium Utility Watcher.lnk`) para que **el CLI se ejecute automáticamente apenas se encienda el equipo** sin alterar `pos.db`.
+4. *(Opcional — Certificado de Firma Digital SHA-256)* Todos los `.exe` están firmados con Authenticode (`AroniumUtility-CodeSigning.cer` incluido en la descarga). Si tu equipo Windows o antivirus corporativo muestra una advertencia de editor local, puedes instalar `AroniumUtility-CodeSigning.cer` con doble clic en **Equipo Local → Editores de confianza** y **Entidades de certificación raíz de confianza** *(o con PowerShell)*:
+   ```powershell
+   Import-Certificate -FilePath .\AroniumUtility-CodeSigning.cer -CertStoreLocation Cert:\CurrentUser\Root
+   Import-Certificate -FilePath .\AroniumUtility-CodeSigning.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+   ```
 
 ---
 
@@ -31,11 +36,12 @@ El dependiente o administrador puede abrir la interfaz visual de cualquiera de e
    aronium-util ui
    ```
 
-Desde **Aronium Utility UI** podrás:
-- Ver el **Dashboard y Métricas en Vivo** (ventas totales, ventas por caja registradora, top productos vendidos, valorización de inventario y cartera de crédito pendiente).
-- Gestionar **Cuentas de Crédito por Cliente** (buscar clientes, ver facturas y productos comprados, agregar anotaciones o compromisos de pago, configurar límites de crédito y generar estados de cuenta).
-- Validar **Inventario Vivo, Alertas de Stock Bajo/Agotado y Kardex de Movimientos**.
-- Conectar y sincronizar **Google Drive / Google Sheets** con 1 clic y crear **Respaldos en Caliente (`VACUUM INTO` + AES-256-GCM)**.
+Desde **Aronium Utility UI** (con el interruptor superior entre **`Modo Básico`** para cajeros/dependientes y **`Modo Avanzado`** para diagnóstico/administración) podrás:
+- **Detectar o seleccionar `pos.db` visualmente:** Si Aronium Lite está instalado en otra ruta o unidad, la UI muestra un aviso amigable y permite seleccionar el archivo `.db` sin usar la terminal.
+- **Crear Cuentas y Anotar Artículos con Escáner HID (`cuentas.db`):** Captura **`ID`**, **`Nombre`**, **`Teléfono`**, **`Método de Pago`**, **`Tope de Crédito`** y **`Descripción`**; busca productos en vivo desde `pos.db` o escanéalos en un solo campo de código de barras (**Enter = +1 unidad**) conservando los precios congelados al momento de anotar y sin alterar el cierre de caja de Aronium.
+- **Registrar Abonos y Verificar Inventario Neto:** Consulta `Stock_Neto = Stock_Aronium - Unidades_En_Cuentas` y registra abonos totales o parciales directamente en `cuentas.db`.
+- **Ver Dashboard y Métricas en Vivo** (ventas totales, ventas por caja registradora, cartera pendiente e inventario).
+- **Conectar y Sincronizar Google Drive / Sheets con 1 Clic** y crear respaldos en caliente (`VACUUM INTO`).
 
 ---
 
@@ -59,5 +65,6 @@ aronium-util drive login
 ```
 
 Esto actualiza automáticamente en tu Google Drive:
-- **`Aronium_Inventario_y_Cuentas_Credito.xlsx`** (con pestañas `Resumen_Cuentas_Credito`, `Detalle_Cuentas_Credito`, `Inventario` y una pestaña `Cliente_<Nombre>` por cada cliente).
+- **`Aronium_Inventario_y_Cuentas_Credito.xlsx`** (con 4 pestañas consolidadas: **`Cuentas`**, **`Movimientos`**, **`Detalle_Articulos`**, **`Inventario_Neto`** y pestañas individuales por cliente).
 - **`/AroniumUtility/Cuentas_Credito/Clientes/<Nombre_Cliente>.xlsx`**, `.csv` y `_Estado_Cuenta.txt`.
+- Respaldo en caliente de `cuentas.db` (`cuentas_backup.db` mediante SQLite `VACUUM INTO`).

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/inventory"
 )
@@ -71,7 +72,7 @@ func BuildXLSXBytes(sheets []SheetData) ([]byte, error) {
 	}
 	contentTypes := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
 		`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-		`<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+		`<Default Extension="rels" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.relationships+xml"/>` +
 		`<Default Extension="xml" ContentType="application/xml"/>` +
 		`<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
 		`<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
@@ -171,77 +172,106 @@ func WriteAtomicFile(destPath string, data []byte) error {
 	return os.Rename(tmpPath, destPath)
 }
 
-// BuildMasterWorkbookSheets creates the unified Inventory + Resumen_Cuentas_Credito + Detalle_Cuentas_Credito + per-customer sheets (TODO-026, TODO-027).
-func BuildMasterWorkbookSheets(inv *inventory.InventoryReport, ledger *credit.LedgerReport, includeCustomerTabs bool) []SheetData {
+// BuildMasterWorkbookSheets creates the 4-tab unified workbook:
+// Cuentas, Movimientos, Detalle_Articulos, Inventario_Neto, plus optional per-customer tabs (TODO-106).
+func BuildMasterWorkbookSheets(
+	inv *inventory.InventoryReport,
+	accLedger *accounts.AccountsLedgerReport,
+	posCreditLedger *credit.LedgerReport,
+	includeCustomerTabs bool,
+) []SheetData {
 	var sheets []SheetData
 
-	// Sheet 1: Resumen_Cuentas_Credito
-	resumenRows := [][]string{
+	// Tab 1: Cuentas
+	cuentasRows := [][]string{
 		{
-			"ID_Cliente", "Cliente", "ID_Fiscal", "Telefono", "Credito_Total_Historico",
-			"Total_Pagado", "Saldo_Pendiente", "Limite_Credito", "Credito_Disponible",
-			"Dias_Vencido", "Ultima_Compra", "Ultimo_Pago", "Estado_Cuenta", "Anotaciones_Cliente",
+			"ID_Cuenta", "Nombre", "Telefono", "Metodo_Pago", "Tope_Credito",
+			"Total_Cargos", "Total_Abonos", "Total_Ajustes", "Saldo_Actual",
+			"Credito_Disponible", "Estado", "Descripcion", "Actualizado_En",
 		},
 	}
-	if ledger != nil {
-		for _, acc := range ledger.Accounts {
-			resumenRows = append(resumenRows, []string{
-				fmt.Sprintf("%d", acc.CustomerID),
-				acc.CustomerName,
-				acc.TaxNumber,
-				acc.PhoneNumber,
-				fmt.Sprintf("%.2f", acc.TotalCreditIssued),
-				fmt.Sprintf("%.2f", acc.TotalPaymentsPaid),
-				fmt.Sprintf("%.2f", acc.PendingBalance),
-				fmt.Sprintf("%.2f", acc.CreditLimit),
-				fmt.Sprintf("%.2f", acc.AvailableCredit),
-				fmt.Sprintf("%d", acc.MaxOverdueDays),
-				acc.LastPurchaseDate,
-				acc.LastPaymentDate,
-				acc.AccountStatus,
-				strings.Join(acc.AccountNotes, " | "),
+	if accLedger != nil {
+		for _, acc := range accLedger.Accounts {
+			cuentasRows = append(cuentasRows, []string{
+				acc.ID,
+				acc.Name,
+				acc.Phone,
+				acc.PaymentMethod,
+				fmt.Sprintf("%d", acc.CreditLimit),
+				fmt.Sprintf("%d", acc.TotalCharges),
+				fmt.Sprintf("%d", acc.TotalPayments),
+				fmt.Sprintf("%d", acc.TotalAdjustments),
+				fmt.Sprintf("%d", acc.CurrentBalance),
+				fmt.Sprintf("%d", acc.AvailableCredit),
+				string(acc.Status),
+				acc.Description,
+				acc.UpdatedAt,
 			})
 		}
 	}
-	sheets = append(sheets, SheetData{Name: "Resumen_Cuentas_Credito", Rows: resumenRows})
+	sheets = append(sheets, SheetData{Name: "Cuentas", Rows: cuentasRows})
 
-	// Sheet 2: Detalle_Cuentas_Credito
-	detalleRows := [][]string{
+	// Tab 2: Movimientos
+	movRows := [][]string{
 		{
-			"Fecha", "Factura", "Caja", "ID_Cliente", "Cliente", "Telefono",
-			"Productos", "Total_Factura", "Pagado", "Saldo_Pendiente",
-			"Medios_Pago", "Anotaciones_Aronium_y_CLI", "Fecha_Vencimiento", "Dias_Vencido", "Estado",
+			"ID_Movimiento", "Fecha", "ID_Cuenta", "Cliente",
+			"Tipo", "Monto", "Metodo_Pago_Usado", "Nota",
 		},
 	}
-	if ledger != nil {
-		for _, tx := range ledger.AllTransactions {
-			detalleRows = append(detalleRows, []string{
-				tx.Date,
-				tx.DocumentNumber,
-				tx.CashRegisterID,
-				fmt.Sprintf("%d", tx.CustomerID),
-				tx.CustomerName,
-				tx.CustomerPhone,
-				tx.ItemsSummary,
-				fmt.Sprintf("%.2f", tx.TotalDocument),
-				fmt.Sprintf("%.2f", tx.PaidAmount),
-				fmt.Sprintf("%.2f", tx.PendingBalance),
-				tx.PaymentBreakdown,
-				tx.CombinedNotes,
-				tx.DueDate,
-				fmt.Sprintf("%d", tx.OverdueDays),
-				tx.Status,
-			})
+	if accLedger != nil {
+		for _, acc := range accLedger.Accounts {
+			for _, mv := range acc.Movements {
+				movRows = append(movRows, []string{
+					fmt.Sprintf("%d", mv.ID),
+					mv.Date,
+					acc.ID,
+					acc.Name,
+					string(mv.Type),
+					fmt.Sprintf("%d", mv.Amount),
+					mv.PaymentMethod,
+					mv.Note,
+				})
+			}
 		}
 	}
-	sheets = append(sheets, SheetData{Name: "Detalle_Cuentas_Credito", Rows: detalleRows})
+	sheets = append(sheets, SheetData{Name: "Movimientos", Rows: movRows})
 
-	// Sheet 3: Inventario
+	// Tab 3: Detalle_Articulos (Frozen snapshots)
+	detalleArtRows := [][]string{
+		{
+			"ID_Movimiento", "Fecha", "ID_Cuenta", "Cliente",
+			"ID_Producto_Aronium", "Codigo_Barras", "Articulo_Snapshot",
+			"Precio_Unitario_Snapshot", "Cantidad", "Subtotal",
+		},
+	}
+	if accLedger != nil {
+		for _, acc := range accLedger.Accounts {
+			for _, mv := range acc.Movements {
+				for _, it := range mv.Items {
+					detalleArtRows = append(detalleArtRows, []string{
+						fmt.Sprintf("%d", mv.ID),
+						mv.Date,
+						acc.ID,
+						acc.Name,
+						fmt.Sprintf("%d", it.AroniumProductID),
+						it.Barcode,
+						it.NameSnapshot,
+						fmt.Sprintf("%d", it.UnitPriceSnapshot),
+						fmt.Sprintf("%.2f", it.Quantity),
+						fmt.Sprintf("%d", it.Subtotal),
+					})
+				}
+			}
+		}
+	}
+	sheets = append(sheets, SheetData{Name: "Detalle_Articulos", Rows: detalleArtRows})
+
+	// Tab 4: Inventario_Neto (Stock_Aronium - Unidades_En_Cuentas)
 	invRows := [][]string{
 		{
-			"SKU_Codigo", "Codigo_Barras", "Producto", "Categoria", "Unidad",
-			"Stock_Actual", "Stock_Minimo", "Costo_Unitario", "Precio_Venta",
-			"Valor_Total_Costo", "Valor_Total_Venta", "Margen_Pct", "Estado_Stock", "Vencimiento",
+			"SKU_Codigo", "Codigo_Barras", "Producto", "Categoria",
+			"Precio_Venta_Actual", "Stock_Aronium", "Unidades_En_Cuentas",
+			"Stock_Neto_Real", "Stock_Minimo", "Costo_Unitario", "Estado_Stock",
 		},
 	}
 	if inv != nil {
@@ -251,36 +281,81 @@ func BuildMasterWorkbookSheets(inv *inventory.InventoryReport, ledger *credit.Le
 				it.Barcode,
 				it.Name,
 				it.Category,
-				it.MeasurementUnit,
-				fmt.Sprintf("%.2f", it.StockQuantity),
+				fmt.Sprintf("%.2f", it.SalePrice),
+				fmt.Sprintf("%.2f", it.AroniumStock),
+				fmt.Sprintf("%.2f", it.CommittedInAccountsQty),
+				fmt.Sprintf("%.2f", it.NetStockQuantity),
 				fmt.Sprintf("%.2f", it.MinStock),
 				fmt.Sprintf("%.2f", it.Cost),
-				fmt.Sprintf("%.2f", it.SalePrice),
-				fmt.Sprintf("%.2f", it.TotalCostValue),
-				fmt.Sprintf("%.2f", it.TotalRetailValue),
-				fmt.Sprintf("%.1f%%", it.EstimatedMargin),
 				string(it.Status),
-				it.ExpirationDate,
 			})
 		}
 	}
-	sheets = append(sheets, SheetData{Name: "Inventario", Rows: invRows})
+	sheets = append(sheets, SheetData{Name: "Inventario_Neto", Rows: invRows})
 
-	// Optional Sheet 4..N: Per-customer dedicated tabs
-	if includeCustomerTabs && ledger != nil {
-		for _, acc := range ledger.Accounts {
-			custRows := BuildCustomerSheetRows(acc)
+	// Optional per-customer dedicated tabs from cuentas.db
+	if includeCustomerTabs && accLedger != nil {
+		for _, acc := range accLedger.Accounts {
 			sheets = append(sheets, SheetData{
-				Name: "Cliente_" + acc.CustomerName,
-				Rows: custRows,
+				Name: "Cliente_" + acc.Name,
+				Rows: BuildAccountSheetRows(acc),
 			})
 		}
+	}
+
+	// Optional legacy POS credit ledger tabs if present
+	if posCreditLedger != nil && len(posCreditLedger.Accounts) > 0 {
+		posRows := [][]string{
+			{"ID_Cliente", "Cliente", "Saldo_Pendiente_POS", "Estado"},
+		}
+		for _, cacc := range posCreditLedger.Accounts {
+			posRows = append(posRows, []string{
+				fmt.Sprintf("%d", cacc.CustomerID),
+				cacc.CustomerName,
+				fmt.Sprintf("%.2f", cacc.PendingBalance),
+				cacc.AccountStatus,
+			})
+		}
+		sheets = append(sheets, SheetData{Name: "Creditos_POS_Legacy", Rows: posRows})
 	}
 
 	return sheets
 }
 
-// BuildCustomerSheetRows formats an individual customer's account ledger sheet.
+// BuildAccountSheetRows formats an individual customer's account ledger sheet from cuentas.db.
+func BuildAccountSheetRows(acc accounts.AccountSummary) [][]string {
+	rows := [][]string{
+		{"ESTADO DE CUENTA DE CLIENTE", acc.Name},
+		{"ID Cuenta", acc.ID, "Teléfono", acc.Phone, "Método de Pago", acc.PaymentMethod},
+		{"Total Cargos", fmt.Sprintf("%d", acc.TotalCharges), "Total Abonos", fmt.Sprintf("%d", acc.TotalPayments), "SALDO ACTUAL", fmt.Sprintf("%d", acc.CurrentBalance)},
+		{"Tope de Crédito", fmt.Sprintf("%d", acc.CreditLimit), "Disponible", fmt.Sprintf("%d", acc.AvailableCredit), "Estado", string(acc.Status)},
+		{"Descripción", acc.Description},
+		{},
+		{"ID Mov", "Fecha", "Tipo", "Monto", "Método", "Nota / Artículos", "Total Ítems"},
+	}
+	for _, mv := range acc.Movements {
+		var itemNames []string
+		for _, it := range mv.Items {
+			itemNames = append(itemNames, fmt.Sprintf("%.2gx %s ($%d)", it.Quantity, it.NameSnapshot, it.Subtotal))
+		}
+		noteText := mv.Note
+		if len(itemNames) > 0 {
+			noteText = fmt.Sprintf("%s | %s", mv.Note, strings.Join(itemNames, ", "))
+		}
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", mv.ID),
+			mv.Date,
+			string(mv.Type),
+			fmt.Sprintf("%d", mv.Amount),
+			mv.PaymentMethod,
+			noteText,
+			fmt.Sprintf("%d", len(mv.Items)),
+		})
+	}
+	return rows
+}
+
+// BuildCustomerSheetRows formats an individual legacy POS customer credit sheet.
 func BuildCustomerSheetRows(acc credit.CustomerCreditAccount) [][]string {
 	rows := [][]string{
 		{"ESTADO DE CUENTA DE CRÉDITO DE CLIENTE", acc.CustomerName},
