@@ -28,9 +28,9 @@ import (
 const (
 	appVersionMajor = 2
 	appVersionMinor = 0
-	appVersionPatch = 0
+	appVersionPatch = 1
 	appVersionBuild = 0
-	appVersionStr   = "2.0.0.0"
+	appVersionStr   = "2.0.1.0"
 )
 
 type targetBinary struct {
@@ -59,7 +59,7 @@ var targets = []targetBinary{
 	},
 	{
 		Dir:              "cmd/aronium-util-setup",
-		FileDescription:  "Aronium Utility Unified Setup Installer v2.0.0 (CLI + UI)",
+		FileDescription:  "Aronium Utility Unified Setup Installer v2.0.1 (CLI + UI)",
 		InternalName:     "aronium-util-setup.exe",
 		OriginalFilename: "aronium-util-setup-x64.exe",
 		ProductName:      "Aronium Utility Installer",

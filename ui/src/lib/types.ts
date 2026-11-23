@@ -245,6 +245,7 @@ export interface ConfigInfoResponse {
   auto_sync_drive?: boolean;
   ui_scale_percent?: number;
   ui_compact_mode?: boolean;
+  ui_theme?: 'dark' | 'light';
   pos_db_password_set?: boolean;
 }
 

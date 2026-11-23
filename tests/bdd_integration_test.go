@@ -1472,8 +1472,8 @@ func TestBDD_V2_SchemaAdaptivePosDB_LocalSyncToggle_PinSecurity_ResetAndRepair(t
 	if defCfg.Watch.AutoSyncDrive {
 		t.Fatalf("expected AutoSyncDrive=false by default for instant local annotation")
 	}
-	if defCfg.UI.ScalePercent != 90 || !defCfg.UI.CompactMode {
-		t.Fatalf("expected 4:3/720p UI defaults ScalePercent=90 & CompactMode=true, got %+v", defCfg.UI)
+	if defCfg.UI.ScalePercent != 90 || !defCfg.UI.CompactMode || defCfg.UI.Theme != "dark" {
+		t.Fatalf("expected 4:3/720p UI defaults ScalePercent=90, CompactMode=true & Theme=dark, got %+v", defCfg.UI)
 	}
 
 	// 3. Uppercase account ID & name (e.g., PARQUES-18502 / DANIEL) + clean table reset & recreation

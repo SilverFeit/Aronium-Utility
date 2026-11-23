@@ -35,7 +35,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "2.0.0"
+const Version = "2.0.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -2122,6 +2122,7 @@ func runConfigCmd(args []string) error {
 			"auto_sync_drive":       cfg.Watch.AutoSyncDrive,
 			"ui_scale_percent":      cfg.UI.ScalePercent,
 			"ui_compact_mode":       cfg.UI.CompactMode,
+			"ui_theme":              config.NormalizeUITheme(cfg.UI.Theme),
 			"pos_db_password_set":   strings.TrimSpace(cfg.PosDBPassword) != "",
 		}
 		if *jsonOut {
@@ -2129,10 +2130,10 @@ func runConfigCmd(args []string) error {
 			enc.SetIndent("", "  ")
 			return enc.Encode(payload)
 		}
-		fmt.Printf("Config: %s\npos.db: %s (existe=%v)\ncuentas.db: %s (existe=%v)\nZona horaria: %s (Hora actual: %s)\nPIN Modo Avanzado: %v | Sync en vivo: %v | Escala UI: %d%%\n",
+		fmt.Printf("Config: %s\npos.db: %s (existe=%v)\ncuentas.db: %s (existe=%v)\nZona horaria: %s (Hora actual: %s)\nPIN Modo Avanzado: %v | Sync en vivo: %v | Escala UI: %d%% | Tema UI: %s\n",
 			cfgPath, cfg.PosDBPath, posErr == nil, cfg.AccountsDBPath, accErr == nil,
 			accounts.LocalLocation().String(), accounts.LocalTimestampNow(),
-			cfg.Security.HasAdvancedPIN, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent)
+			cfg.Security.HasAdvancedPIN, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent, config.NormalizeUITheme(cfg.UI.Theme))
 		return nil
 
 	case "set-db":
@@ -2230,6 +2231,7 @@ func runConfigCmd(args []string) error {
 		autoSync := fs.Bool("auto-sync-drive", false, "Sincronizar automáticamente con Google Drive al guardar")
 		uiScale := fs.Int("ui-scale", 0, "Escala visual de interfaz en porcentaje (75..125)")
 		uiCompact := fs.Bool("ui-compact", true, "Modo compacto para monitores 4:3 720p")
+		uiTheme := fs.String("ui-theme", "dark", "Tema visual de la interfaz ('dark' o 'light')")
 		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
 		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
 		if err != nil {
@@ -2262,6 +2264,9 @@ func runConfigCmd(args []string) error {
 		if hasExplicitFlag(fs, "ui-compact") {
 			cfg.UI.CompactMode = *uiCompact
 		}
+		if hasExplicitFlag(fs, "ui-theme") {
+			cfg.UI.Theme = config.NormalizeUITheme(*uiTheme)
+		}
 		if err := cfg.Save(cfgPath); err != nil {
 			return err
 		}
@@ -2274,9 +2279,10 @@ func runConfigCmd(args []string) error {
 				"auto_sync_drive":    cfg.Watch.AutoSyncDrive,
 				"ui_scale_percent":   cfg.UI.ScalePercent,
 				"ui_compact_mode":    cfg.UI.CompactMode,
+				"ui_theme":           config.NormalizeUITheme(cfg.UI.Theme),
 			})
 		}
-		fmt.Printf("[✓] Preferencias guardadas (Zona=%s, SyncEnVivo=%v, Escala=%d%%)\n", cfg.Timezone, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent)
+		fmt.Printf("[✓] Preferencias guardadas (Zona=%s, SyncEnVivo=%v, Escala=%d%%, Tema=%s)\n", cfg.Timezone, cfg.Watch.AutoSyncDrive, cfg.UI.ScalePercent, config.NormalizeUITheme(cfg.UI.Theme))
 		return nil
 
 	case "set-pin":

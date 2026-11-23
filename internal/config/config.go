@@ -25,8 +25,9 @@ type SecurityConfig struct {
 }
 
 type UIConfig struct {
-	ScalePercent int  `yaml:"scale_percent" json:"scale_percent"`
-	CompactMode  bool `yaml:"compact_mode" json:"compact_mode"`
+	ScalePercent int    `yaml:"scale_percent" json:"scale_percent"`
+	CompactMode  bool   `yaml:"compact_mode" json:"compact_mode"`
+	Theme        string `yaml:"theme,omitempty" json:"theme"`
 }
 
 // Config represents the declarative schema of aronium-util.yaml (TODO-006).
@@ -221,6 +222,7 @@ func DefaultConfig() *Config {
 		UI: UIConfig{
 			ScalePercent: 90,
 			CompactMode:  true,
+			Theme:        "dark",
 		},
 		Watch: WatchConfig{
 			PollIntervalMs: 3000,
@@ -323,6 +325,7 @@ func Load(path string) (*Config, error) {
 	} else if cfg.UI.ScalePercent > 125 {
 		cfg.UI.ScalePercent = 125
 	}
+	cfg.UI.Theme = NormalizeUITheme(cfg.UI.Theme)
 	if strings.TrimSpace(cfg.Timezone) == "" {
 		cfg.Timezone = "Local"
 	} else if !strings.EqualFold(cfg.Timezone, "Local") && os.Getenv("ARONIUM_TIMEZONE") == "" {
@@ -332,6 +335,14 @@ func Load(path string) (*Config, error) {
 		_ = os.Setenv("ARONIUM_POS_DB_PASSWORD", cfg.PosDBPassword)
 	}
 	return cfg, nil
+}
+
+// NormalizeUITheme ensures UI.Theme is either "dark" (default) or "light".
+func NormalizeUITheme(theme string) string {
+	if strings.EqualFold(strings.TrimSpace(theme), "light") {
+		return "light"
+	}
+	return "dark"
 }
 
 // HashPIN validates a strictly 5-digit numeric PIN and returns its salted SHA-256 hex digest.

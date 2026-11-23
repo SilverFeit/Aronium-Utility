@@ -64,9 +64,10 @@
   // Optional live Drive sync toggle (off by default -> instant local writes)
   let autoSyncLive = $state(false);
 
-  // 4:3 / 720p adaptive UI scaling & compact mode
+  // 4:3 / 720p adaptive UI scaling, compact mode & theme ('dark' default | 'light')
   let uiScalePercent = $state(90);
   let uiCompactMode = $state(true);
+  let uiTheme = $state<'dark' | 'light'>('dark');
 
   // Configurable Timezone (Local PC clock vs manual)
   let timezoneInput = $state('Local');
@@ -243,6 +244,10 @@
       autoSyncLive = Boolean(cfgRes.auto_sync_drive ?? cfgRes.config?.watch?.auto_sync_drive ?? false);
       uiScalePercent = cfgRes.ui_scale_percent ?? cfgRes.config?.ui?.scale_percent ?? 90;
       uiCompactMode = cfgRes.ui_compact_mode ?? cfgRes.config?.ui?.compact_mode ?? true;
+      const loadedTheme = cfgRes.ui_theme ?? cfgRes.config?.ui?.theme;
+      if (loadedTheme === 'light' || loadedTheme === 'dark') {
+        uiTheme = loadedTheme;
+      }
       effectiveTimezone = cfgRes.effective_timezone || '';
       currentLocalTime = cfgRes.current_local_time || '';
       hasAdvancedPin = Boolean(cfgRes.has_advanced_pin);
@@ -864,6 +869,7 @@
     autoSync?: boolean;
     scale?: number;
     compact?: boolean;
+    theme?: 'dark' | 'light';
     tz?: string;
   }) {
     loading = true;
@@ -871,6 +877,7 @@
       const nextSync = overrides?.autoSync ?? autoSyncLive;
       const nextScale = overrides?.scale ?? uiScalePercent;
       const nextCompact = overrides?.compact ?? uiCompactMode;
+      const nextTheme = overrides?.theme ?? uiTheme;
       const resolvedTZ =
         overrides?.tz ?? (timezoneInput === 'custom' ? customTimezoneValue.trim() || 'Local' : timezoneInput);
 
@@ -880,6 +887,7 @@
         auto_sync_drive: boolean;
         ui_scale_percent: number;
         ui_compact_mode: boolean;
+        ui_theme: 'dark' | 'light';
       }>([
         'config',
         'set-prefs',
@@ -889,21 +897,42 @@
         '--ui-scale',
         String(nextScale),
         nextCompact ? '--ui-compact=true' : '--ui-compact=false',
+        '--ui-theme',
+        nextTheme,
         '--json',
       ]);
 
       autoSyncLive = res.auto_sync_drive;
       uiScalePercent = res.ui_scale_percent;
       uiCompactMode = res.ui_compact_mode;
+      uiTheme = res.ui_theme === 'light' ? 'light' : 'dark';
       effectiveTimezone = res.effective_timezone;
       currentLocalTime = res.current_local_time;
+      try {
+        localStorage.setItem('aronium_ui_theme', uiTheme);
+      } catch {
+        // ignore storage errors
+      }
       showToast(
-        `Preferencias guardadas · Hora local: ${res.current_local_time} (${res.effective_timezone}) · Escala: ${res.ui_scale_percent}%`
+        `Preferencias guardadas · Hora local: ${res.current_local_time} (${res.effective_timezone}) · Escala: ${res.ui_scale_percent}% · Tema: ${uiTheme === 'light' ? 'Claro' : 'Oscuro'}`
       );
     } catch (e: any) {
       showToast(`Error guardando preferencias: ${e?.message || e}`, true);
     } finally {
       loading = false;
+    }
+  }
+
+  function handleToggleTheme() {
+    const next: 'dark' | 'light' = uiTheme === 'dark' ? 'light' : 'dark';
+    uiTheme = next;
+    try {
+      localStorage.setItem('aronium_ui_theme', next);
+    } catch {
+      // ignore storage errors
+    }
+    if (!loading) {
+      handleSavePrefs({ theme: next });
     }
   }
 
@@ -1136,11 +1165,21 @@
     });
   }
 
+  $effect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('theme-light', uiTheme === 'light');
+    }
+  });
+
   onMount(() => {
     try {
       const savedMode = localStorage.getItem('aronium_ui_mode');
       if (savedMode === 'basic' || savedMode === 'advanced') {
         uiMode = savedMode;
+      }
+      const savedTheme = localStorage.getItem('aronium_ui_theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        uiTheme = savedTheme;
       }
     } catch {
       // ignore
@@ -1149,7 +1188,7 @@
   });
 </script>
 
-<div class="app-shell {uiCompactMode ? 'compact-43' : ''}" style="--ui-zoom: {uiScalePercent / 100};">
+<div class="app-shell {uiCompactMode ? 'compact-43' : ''} {uiTheme === 'light' ? 'theme-light' : ''}" style="--ui-zoom: {uiScalePercent / 100};">
   <!-- 5-DIGIT PIN SECURITY MODAL -->
   {#if pinModalVisible}
     <div class="modal-backdrop">
@@ -1201,7 +1240,7 @@
         <div class="card-title" style="color: var(--accent-red);">
           <span>⚠️ Borrar y Volver a Crear Tabla de Cuentas</span>
         </div>
-        <p style="font-size: 13px; color: #fecaca; line-height: 1.5; margin-top: 0;">
+        <p style="font-size: 13px; color: var(--text-danger-soft); line-height: 1.5; margin-top: 0;">
           Esta acción guardará una copia de respaldo automática en <code>backups/</code>, eliminará por completo
           las tablas de <code>cuentas.db</code> y las volverá a crear vacías (esquema v3 en hora local).
         </p>
@@ -1291,7 +1330,7 @@
           <strong style="font-size: 14.5px;">
             No encontramos la base de productos de Aronium en la ruta por defecto
           </strong>
-          <div style="font-size: 13px; margin-top: 4px; color: #fef3c7;">
+          <div style="font-size: 13px; margin-top: 4px; color: var(--text-amber-soft);">
             Buscamos en <code>{doctor.pos_db_path}</code>. Si Aronium está guardado en otra carpeta de tu PC,
             haz clic en <strong>"Elegir archivo pos.db"</strong> para seleccionarlo y ver tus productos al
             instante. Tus cuentas de clientes en <code>cuentas.db</code> ya están listas para usarse.
@@ -1611,7 +1650,7 @@
               {#if exceedsProjectedLimit}
                 <div style="margin-top: 10px; font-size: 12.5px; color: var(--accent-red);">
                   ⚠ Atención: Este cargo supera el tope configurado para el cliente.
-                  <label style="display: flex; align-items: center; gap: 8px; margin-top: 6px; color: #fecaca;">
+                  <label style="display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--text-danger-soft);">
                     <input type="checkbox" bind:checked={allowOverLimitConfirm} />
                     Autorizo guardar superando el tope de crédito
                   </label>
@@ -1657,7 +1696,7 @@
           <div class="card">
             <!-- Quick Punctual Value Annotator ABOVE Barcode Scanner -->
             <div class="quick-value-box">
-              <div style="font-size: 13.5px; font-weight: 800; color: #fde68a; margin-bottom: 8px;">
+              <div style="font-size: 13.5px; font-weight: 800; color: var(--text-amber-soft); margin-bottom: 8px;">
                 Agregar Valor Puntual
               </div>
               <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
@@ -1726,7 +1765,7 @@
             </div>
 
             <div class="scanner-box">
-              <div style="font-size: 12.5px; color: #a7f3d0; margin-bottom: 8px; font-weight: 600;">
+              <div style="font-size: 12.5px; color: var(--text-green-soft); margin-bottom: 8px; font-weight: 600;">
                 Pasa el lector de código de barras aquí (o escribe el nombre del producto):
               </div>
               <input
@@ -1915,7 +1954,7 @@
 
             {#if sharedAccountsForPayment.length > 1}
               <div style="margin-bottom: 12px;">
-                <div style="font-size: 13px; color: #fde68a; font-weight: 700; margin-bottom: 8px;">
+                <div style="font-size: 13px; color: var(--text-amber-soft); font-weight: 700; margin-bottom: 8px;">
                   Este ID ({activePayAccount.id}) tiene {sharedAccountsForPayment.length} cuentas registradas. Elige a cuál deseas abonar:
                 </div>
                 <div class="shared-accounts-grid">
@@ -2439,11 +2478,11 @@
               class="card"
               style="border-color: var(--accent-red); background: rgba(248, 113, 113, 0.12); margin-bottom: 14px;"
             >
-              <div class="card-title" style="color: #fecaca;">
+              <div class="card-title" style="color: var(--text-danger-soft);">
                 <span>Confirmar Eliminación de Cuenta Pagada</span>
                 <button class="btn btn-outline" onclick={() => (confirmDeleteAccount = null)}>Cancelar</button>
               </div>
-              <p style="font-size: 13.5px; color: #fee2e2; margin-top: 0;">
+              <p style="font-size: 13.5px; color: var(--text-danger-soft); margin-top: 0;">
                 ¿Eliminar definitivamente la cuenta <strong>[{confirmDeleteAccount.id}] {confirmDeleteAccount.nombre}</strong>?
                 Su saldo actual es <strong>$0</strong> (totalmente pagada). Esta acción borrará su historial de
                 movimientos en <code>cuentas.db</code> y actualizará Google Drive.
@@ -2684,10 +2723,16 @@
             {/if}
           </div>
 
-          <!-- Display Scale (4:3 720p) & Configurable Timezone + 5-Digit PIN Security -->
+          <!-- Separated Card 1: Timezone | Separated Card 2: Visual Scale & Dark/Light Theme Switch -->
           <div class="panel-grid">
             <div class="card">
-              <h3 class="card-title">🕒 Zona Horaria y Escala Visual (Monitor 4:3 / 720p)</h3>
+              <div class="card-title">
+                <span>🕒 Zona Horaria de Registro</span>
+                <span class="badge badge-ok">{effectiveTimezone || 'Local'}</span>
+              </div>
+              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0; margin-bottom: 12px;">
+                Define si los cargos, abonos y comprobantes usan la hora automática de Windows o una zona horaria manual para cuadrar con tus cámaras de seguridad.
+              </p>
               <label class="field-label">
                 Zona Horaria de Registro (Sistema o Manual)
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -2706,8 +2751,42 @@
                   {/if}
                 </div>
               </label>
-              <div style="font-size: 12px; color: var(--accent-blue); margin-top: 6px; margin-bottom: 12px;">
+              <div style="font-size: 12px; color: var(--accent-blue); margin-top: 10px; margin-bottom: 14px;">
                 Zona activa: <strong>{effectiveTimezone || 'Local'}</strong> · Hora efectiva: <code>{currentLocalTime || 'En sincronía con Windows'}</code>
+              </div>
+              <button class="btn" style="width: 100%;" disabled={loading} onclick={() => handleSavePrefs()}>
+                Guardar Zona Horaria
+              </button>
+            </div>
+
+            <div class="card">
+              <div class="card-title">
+                <span>🖥️ Escala Visual y Tema (Monitor 4:3 / 720p)</span>
+                <span class="badge badge-ok">{uiScalePercent}% · {uiTheme === 'light' ? 'Modo Claro' : 'Modo Oscuro'}</span>
+              </div>
+
+              <div class="theme-switch-row">
+                <div>
+                  <div style="font-size: 13px; font-weight: 700; color: var(--text-main);">
+                    Apariencia de Interfaz
+                  </div>
+                  <div style="font-size: 11.5px; color: var(--text-muted);">
+                    Por defecto en Modo Oscuro · Cambia a Modo Claro si trabajas con mucha luz
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={uiTheme === 'light'}
+                  aria-label="Cambiar entre Modo Oscuro y Modo Claro"
+                  class="theme-switch-btn {uiTheme === 'light' ? 'is-light' : ''}"
+                  onclick={handleToggleTheme}
+                >
+                  <span class="theme-switch-track">
+                    <span class="theme-switch-thumb"></span>
+                  </span>
+                  <span>{uiTheme === 'light' ? '☀️ Modo Claro' : '🌙 Modo Oscuro'}</span>
+                </button>
               </div>
 
               <label class="field-label">
@@ -2731,46 +2810,47 @@
                 <span>Modo Compacto 4:3 (Espaciado optimizado para 1024x768 / 720p)</span>
               </label>
               <button class="btn" style="width: 100%;" disabled={loading} onclick={() => handleSavePrefs()}>
-                Guardar Zona Horaria y Tamaño de Pantalla
+                Guardar Escala Visual y Tema
               </button>
             </div>
+          </div>
 
-            <div class="card">
-              <div class="card-title">
-                <span>🔐 PIN Numérico de 5 Dígitos (Modo Avanzado)</span>
-                <span class={hasAdvancedPin ? 'badge badge-ok' : 'badge badge-warn'}>
-                  {hasAdvancedPin ? 'PIN Activo' : 'Sin PIN'}
-                </span>
-              </div>
-              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
-                Protege la entrada a <strong>Modo Avanzado</strong>, la eliminación de cuentas y el reinicio de <code>cuentas.db</code> con una clave numérica de 5 dígitos.
-              </p>
+          <!-- Separate Card 3: 5-Digit PIN Security -->
+          <div class="card">
+            <div class="card-title">
+              <span>🔐 PIN Numérico de 5 Dígitos (Modo Avanzado)</span>
+              <span class={hasAdvancedPin ? 'badge badge-ok' : 'badge badge-warn'}>
+                {hasAdvancedPin ? 'PIN Activo' : 'Sin PIN'}
+              </span>
+            </div>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
+              Protege la entrada a <strong>Modo Avanzado</strong>, la eliminación de cuentas y el reinicio de <code>cuentas.db</code> con una clave numérica de 5 dígitos.
+            </p>
+            {#if hasAdvancedPin}
+              <label class="field-label" style="margin-bottom: 8px;">
+                PIN Actual (5 dígitos)
+                <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={curPinInput} placeholder="•••••" />
+              </label>
+            {/if}
+            <div class="form-grid" style="margin-bottom: 10px;">
+              <label class="field-label">
+                Nuevo PIN (5 números)
+                <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={newPinInput} placeholder="Ej. 12345" />
+              </label>
+              <label class="field-label">
+                Confirmar Nuevo PIN
+                <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={confirmNewPinInput} placeholder="Ej. 12345" />
+              </label>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-green" disabled={loading} onclick={handleConfigurePin}>
+                {hasAdvancedPin ? 'Cambiar PIN de 5 Dígitos' : 'Activar PIN de 5 Dígitos'}
+              </button>
               {#if hasAdvancedPin}
-                <label class="field-label" style="margin-bottom: 8px;">
-                  PIN Actual (5 dígitos)
-                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={curPinInput} placeholder="•••••" />
-                </label>
-              {/if}
-              <div class="form-grid" style="margin-bottom: 10px;">
-                <label class="field-label">
-                  Nuevo PIN (5 números)
-                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={newPinInput} placeholder="Ej. 12345" />
-                </label>
-                <label class="field-label">
-                  Confirmar Nuevo PIN
-                  <input class="input" type="password" inputmode="numeric" maxlength="5" bind:value={confirmNewPinInput} placeholder="Ej. 12345" />
-                </label>
-              </div>
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button class="btn btn-green" disabled={loading} onclick={handleConfigurePin}>
-                  {hasAdvancedPin ? 'Cambiar PIN de 5 Dígitos' : 'Activar PIN de 5 Dígitos'}
+                <button class="btn btn-red" disabled={loading} onclick={handleClearAdvancedPin}>
+                  Quitar PIN
                 </button>
-                {#if hasAdvancedPin}
-                  <button class="btn btn-red" disabled={loading} onclick={handleClearAdvancedPin}>
-                    Quitar PIN
-                  </button>
-                {/if}
-              </div>
+              {/if}
             </div>
           </div>
 
@@ -2812,7 +2892,7 @@
                   {/if}
                 </div>
                 {#if updateCheck.release_title}
-                  <div style="margin-top: 6px; font-weight: 700; color: #bae6fd;">
+                  <div style="margin-top: 6px; font-weight: 700; color: var(--text-blue-soft);">
                     {updateCheck.release_title}
                   </div>
                 {/if}
@@ -2824,7 +2904,7 @@
 
             {#if updateApplyResult}
               <div
-                style="padding: 10px 14px; border-radius: 8px; background: rgba(16, 185, 129, 0.14); border: 1px solid var(--accent-green); color: #a7f3d0; font-size: 13px; margin-bottom: 12px;"
+                style="padding: 10px 14px; border-radius: 8px; background: rgba(16, 185, 129, 0.14); border: 1px solid var(--accent-green); color: var(--text-green-soft); font-size: 13px; margin-bottom: 12px;"
               >
                 <strong>{updateApplyResult.message}</strong>
                 {#if updateApplyResult.sha256}

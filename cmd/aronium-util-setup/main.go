@@ -28,7 +28,7 @@ var embeddedAppIcon []byte
 //go:embed payload/AroniumUtility-CodeSigning.cer
 var embeddedCodeSigningCert []byte
 
-const InstallerVersion = "2.0.0"
+const InstallerVersion = "2.0.1"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")

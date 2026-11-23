@@ -2,6 +2,17 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [2.0.1] — 2026-11-23
+
+### Improved
+- **Separated Timezone & Visual Scale Components (`ui/src/App.svelte`):**
+  - Split the combined Timezone and Visual Scale panel inside **Modo Avanzado → Diagnóstico & Actualización** into two distinct visual `.card` components (`🕒 Zona Horaria de Registro` and `🖥️ Escala Visual y Tema`), each with its own save action and live status badge.
+- **Dark Mode / Light Mode Toggle Switch (`ui/src/app.css`, `ui/src/App.svelte`, `internal/config/config.go`, `cmd/aronium-util/main.go`):**
+  - Kept Dark Mode (`dark`) as the default UI appearance and added an interactive **Modo Oscuro ↔ Modo Claro** switch inside the Visual Scale & Appearance card in **Modo Avanzado**.
+  - Persists `UI.Theme` (`"dark"` | `"light"`) in `aronium-util.yaml` (`config get` / `config set-prefs --ui-theme`) and `localStorage`, with full high-contrast CSS variable overrides for every screen, alert banner, toast, and scanner input in Light Mode.
+
+---
+
 ## [2.0.0] — 2026-11-22
 
 ### Added & Fixed
