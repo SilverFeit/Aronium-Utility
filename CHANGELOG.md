@@ -2,6 +2,23 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [2.0.2] — 2026-11-24
+
+### Added & Fixed
+- **Root-Cause Fix for Locked Save / Sync Buttons (`internal/db/db.go`, `internal/events/bus.go`, `ui/src/App.svelte`):**
+  - Eliminated N+1 per-document `PRAGMA table_info` + SQL query explosion inside `db.ListDocuments` by replacing `listDocumentItems` / `listDocumentPayments` loops with 2 single bulk queries (`loadDocumentItemsSince` / `loadDocumentPaymentsSince`), speeding up `admin --json`, `reports`, and `watcher` execution by orders of magnitude.
+  - Decoupled UI action spinners (`savingAccount`, `recordingPayment`, `syncingDrive`, `backingUpAllDBs`) from `refreshAll()` so Save and Sync buttons are never locked on startup or during background dashboard refreshes.
+- **Complete 100% Uninstaller with `Mis Documentos` Backup (`cmd/aronium-util-uninstall`, `internal/service/uninstaller.go`, `installer/uninstall.bat`):**
+  - Added dedicated elevated **`aronium-util-uninstall-x64.exe` / `x86.exe`** (and `aronium-util uninstall`) that terminates active processes/services, copies `cuentas.db` safely to `Mis Documentos\AroniumUtility_Respaldo_Cuentas\cuentas.db`, removes shortcuts, environment variables, global shims, User/System PATH entries, and wipes 100% of `%LOCALAPPDATA%\Programs\AroniumUtility` and `%LOCALAPPDATA%\AroniumUtility`.
+- **Hardened Installer with Global CMD Shims & `[6/6]` Double Verification (`cmd/aronium-util-setup/main.go`):**
+  - Automatically restores `cuentas.db` from `Mis Documentos\AroniumUtility_Respaldo_Cuentas\cuentas.db` on reinstall after a full wipe.
+  - Registers both User + System PATH, copies global shims (`C:\Windows\aronium-util.cmd`, `System32\aronium-util.exe`), broadcasts `WM_SETTINGCHANGE`, and runs SHA-256 + `aronium-util version` post-install verification.
+- **Explicit Full `.db` Backup to Google Drive & Debug Logs Tab (`internal/backup/all_dbs.go`, `internal/config/debuglog.go`, `ui/src/App.svelte`):**
+  - Added `aronium-util backup all-dbs` and **`☁️ Respaldar Todas las Bases (.db) a Drive`** button to snapshot `pos.db`, `cuentas.db`, `aronium_utility_state.db` and `aronium-util.yaml`, zip them locally + copy to `Mis Documentos`, and upload all files directly to Google Drive `/Backups_BD`.
+  - Added **`7. Logs de Debug`** tab in **Modo Avanzado** (`debug.log` + `service.log`, CLI binary presence check, `Probar Comando CLI`, copy & clear actions).
+
+---
+
 ## [2.0.1] — 2026-11-23
 
 ### Improved

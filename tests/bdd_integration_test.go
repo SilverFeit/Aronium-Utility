@@ -1534,3 +1534,121 @@ func TestBDD_V2_SchemaAdaptivePosDB_LocalSyncToggle_PinSecurity_ResetAndRepair(t
 		t.Fatalf("expected 0 accounts after table reset, got %+v (err=%v)", afterReset, err)
 	}
 }
+
+func TestBDD_V202_BulkListDocuments_AllDBsBackup_UninstallerDocumentsCopy_And_DebugLogs(t *testing.T) {
+	cfg, tmpDir := setupTestEnv(t)
+
+	// 1. Verify bulk db.ListDocuments preserves items & payments properly without N+1 loop
+	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	if err != nil {
+		t.Fatalf("OpenPosDBReadOnly: %v", err)
+	}
+	defer posConn.Close()
+	docs, err := db.ListDocuments(posConn, 0, cfg.CashRegisterID)
+	if err != nil || len(docs) == 0 {
+		t.Fatalf("bulk ListDocuments failed: len=%d err=%v", len(docs), err)
+	}
+	hasItems := false
+	hasPayments := false
+	for _, d := range docs {
+		if len(d.Items) > 0 {
+			hasItems = true
+		}
+		if len(d.Payments) > 0 {
+			hasPayments = true
+		}
+	}
+	if !hasItems || !hasPayments {
+		t.Fatalf("expected bulk ListDocuments to hydrate Items and Payments, got hasItems=%v hasPayments=%v", hasItems, hasPayments)
+	}
+
+	// 2. Verify CreateAllDatabasesSnapshot snapshots pos.db, cuentas.db, state.db, config + Documents backup
+	docsBackupDir := filepath.Join(tmpDir, "FakeDocumentsBackup")
+	t.Setenv("ARONIUM_DOCS_BACKUP_DIR", docsBackupDir)
+	t.Setenv("ARONIUM_UTIL_HOME", tmpDir)
+
+	accMgr, err := accounts.NewManager(cfg.AccountsDBPath)
+	if err != nil {
+		t.Fatalf("accounts.NewManager: %v", err)
+	}
+	if _, err := accMgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		IDPrefix:      "Torre",
+		IDNumber:      "110",
+		Name:          "Cliente Backup V202",
+		PaymentMethod: "QR",
+		CreditLimit:   100000,
+	}); err != nil {
+		t.Fatalf("CreateOrUpdateAccountWithItems: %v", err)
+	}
+	_ = accMgr.Close()
+
+	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	_ = stateConn.Close()
+
+	cfgPath := filepath.Join(tmpDir, "aronium-util.yaml")
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+
+	bMgr := backup.NewManager(cfg)
+	allRes, err := bMgr.CreateAllDatabasesSnapshot(context.Background(), cfgPath)
+	if err != nil {
+		t.Fatalf("CreateAllDatabasesSnapshot: %v", err)
+	}
+	if len(allRes.Files) < 4 {
+		t.Fatalf("expected at least 4 backed up files (pos, cuentas, state, yaml), got %d (%+v)", len(allRes.Files), allRes.Files)
+	}
+	if _, err := os.Stat(allRes.ZipArchivePath); err != nil {
+		t.Fatalf("expected zip archive at %s: %v", allRes.ZipArchivePath, err)
+	}
+	if allRes.DocumentsAccountsCopy == "" {
+		t.Fatalf("expected DocumentsAccountsCopy path in backup result")
+	}
+
+	// 3. Verify Complete Uninstaller backs up cuentas.db to Mis Documentos and wipes installDir + dataDir 100%
+	fakeInstallDir := filepath.Join(tmpDir, "InstallPrograms")
+	fakeDataDir := filepath.Join(tmpDir, "DataApp")
+	_ = os.MkdirAll(fakeInstallDir, 0755)
+	_ = os.MkdirAll(fakeDataDir, 0755)
+	_ = os.WriteFile(filepath.Join(fakeInstallDir, "aronium-util.exe"), []byte("dummy-exe"), 0755)
+	accRaw, _ := os.ReadFile(cfg.AccountsDBPath)
+	_ = os.WriteFile(filepath.Join(fakeDataDir, "cuentas.db"), accRaw, 0644)
+
+	docsBackupDir2 := filepath.Join(tmpDir, "FakeDocumentsUninstall")
+	t.Setenv("ARONIUM_DOCS_BACKUP_DIR", docsBackupDir2)
+
+	unRep, err := service.RunCompleteUninstall(fakeInstallDir, fakeDataDir, "")
+	if err != nil {
+		t.Fatalf("RunCompleteUninstall failed: %v", err)
+	}
+	if !unRep.AccountsBackedUp || !unRep.InstallDirRemoved || !unRep.DataDirRemoved {
+		t.Fatalf("expected full uninstall + accounts backup, got %+v", unRep)
+	}
+	if _, err := os.Stat(filepath.Join(docsBackupDir2, "cuentas.db")); err != nil {
+		t.Fatalf("expected cuentas.db backup inside Documents folder: %v", err)
+	}
+	if _, err := os.Stat(fakeInstallDir); !os.IsNotExist(err) {
+		t.Fatalf("expected fakeInstallDir to be completely deleted")
+	}
+	if _, err := os.Stat(fakeDataDir); !os.IsNotExist(err) {
+		t.Fatalf("expected fakeDataDir to be completely deleted")
+	}
+
+	// 4. Verify DebugLogger write / redaction / read / clear
+	_ = os.MkdirAll(tmpDir, 0755)
+	config.AppendDebugLog("UI-IPC", "doctor --json", "OK", 12, "healthy=true")
+	dbgOut, err := config.ReadDebugLogs(8192)
+	if err != nil || !strings.Contains(dbgOut, "doctor --json") {
+		t.Fatalf("expected debug.log to contain doctor --json, got %q (err=%v)", dbgOut, err)
+	}
+	if err := config.ClearDebugLogs(); err != nil {
+		t.Fatalf("ClearDebugLogs: %v", err)
+	}
+	dbgAfter, _ := config.ReadDebugLogs(8192)
+	if !strings.Contains(dbgAfter, "limpiado") {
+		t.Fatalf("expected cleared marker in debug.log, got %q", dbgAfter)
+	}
+}

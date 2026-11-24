@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -22,13 +24,16 @@ var embeddedCLIBinary []byte
 //go:embed payload/aronium-utility-ui.bin
 var embeddedUIBinary []byte
 
+//go:embed payload/aronium-util-uninstall.bin
+var embeddedUninstallBinary []byte
+
 //go:embed payload/app-icon.ico
 var embeddedAppIcon []byte
 
 //go:embed payload/AroniumUtility-CodeSigning.cer
 var embeddedCodeSigningCert []byte
 
-const InstallerVersion = "2.0.1"
+const InstallerVersion = "2.0.2"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -39,7 +44,7 @@ func main() {
 	installServiceFlag := flag.Bool("install-service", true, "Registrar inicio automático del CLI (aronium-util watch) al encender Windows")
 	launchUIFlag := flag.Bool("launch-ui", false, "Abrir Aronium Utility UI al finalizar la instalación")
 	webLoginFlag := flag.Bool("web-login", false, "Abrir navegador para conectar Google Drive al finalizar la instalación")
-	uninstallFlag := flag.Bool("uninstall", false, "Desinstalar Aronium Utility (CLI + UI) y limpiar variables de entorno")
+	uninstallFlag := flag.Bool("uninstall", false, "Desinstalar 100% Aronium Utility (CLI + UI) respaldando cuentas.db en Mis Documentos")
 	silentFlag := flag.Bool("silent", false, "Ejecución silenciosa sin pausa final")
 	flag.Parse()
 
@@ -57,11 +62,23 @@ func main() {
 	}
 
 	if *uninstallFlag {
-		if err := runUninstall(installDir, dataDir); err != nil {
+		rep, err := service.RunCompleteUninstall(installDir, dataDir, "")
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "[ERROR] Falló la desinstalación: %v\n", err)
+			if !*silentFlag && runtime.GOOS == "windows" {
+				fmt.Println("\nPresiona ENTER para salir...")
+				_, _ = fmt.Scanln()
+			}
 			os.Exit(1)
 		}
-		fmt.Println("[✓] Aronium Utility (CLI + UI) desinstalado correctamente.")
+		if rep.AccountsBackedUp {
+			fmt.Printf("[✓] Copia de seguridad de cuentas.db guardada en Mis Documentos: %s\n", rep.AccountsBackupPath)
+		}
+		fmt.Println("[✓] Aronium Utility (CLI + UI) eliminado al 100%.")
+		if !*silentFlag && runtime.GOOS == "windows" {
+			fmt.Println("\nPresiona ENTER para salir...")
+			_, _ = fmt.Scanln()
+		}
 		return
 	}
 
@@ -80,17 +97,17 @@ func main() {
 	}
 
 	fmt.Println("--------------------------------------------------------------------------")
-	fmt.Println("[✓] ¡INSTALACIÓN UNIFICADA COMPLETADA EXITOSAMENTE!")
+	fmt.Println("[✓] ¡INSTALACIÓN UNIFICADA Y DOBLE VERIFICACIÓN COMPLETADAS CON ÉXITO!")
 	fmt.Println("    • Ejecutable CLI (Motor Go):    aronium-util.exe")
 	fmt.Println("    • Ejecutable Interfaz Gráfica:  aronium-utility-ui.exe (Aronium Utility UI)")
-	fmt.Println("    • Inicio Automático con PC:     aronium-utility-ui.exe (UI + Bandeja + Monitor en vivo)")
+	fmt.Println("    • Desinstalador Limpio (100%):  aronium-util-uninstall.exe")
+	fmt.Println("    • Inicio Automático con PC:     aronium-utility-ui.exe (UI + Bandeja + Monitor)")
 	fmt.Println("")
 	fmt.Println("    Comandos disponibles desde cualquier terminal o acceso directo:")
+	fmt.Println("      aronium-util                 (Motor CLI global en consola)")
 	fmt.Println("      aronium-utility-ui           (Abrir Aronium Utility UI directamente)")
-	fmt.Println("      aronium-util ui              (Lanzar Aronium Utility UI desde el CLI)")
-	fmt.Println("      aronium-util drive login     (Conectar Google Drive vía Web)")
-	fmt.Println("      aronium-util credit list     (Ver cuentas de crédito por cliente)")
-	fmt.Println("      aronium-util sync            (Sincronizar Inventario y Cuentas)")
+	fmt.Println("      aronium-util-uninstall       (Desinstalar 100% respaldando en Mis Documentos)")
+	fmt.Println("      aronium-util doctor          (Diagnóstico rápido del sistema)")
 	fmt.Println("==========================================================================")
 
 	if !*silentFlag && runtime.GOOS == "windows" {
@@ -115,29 +132,43 @@ func defaultInstallDir() string {
 
 func runInstall(installDir, dataDir, posDB, storeID, registerID string, installService, webLogin, launchUI bool) error {
 	// 1. Create directories
-	fmt.Printf("[1/5] Creando directorios de instalación y estado...\n")
-	for _, d := range []string{installDir, dataDir, filepath.Join(dataDir, "backups"), filepath.Join(dataDir, "GoogleDriveSync")} {
+	fmt.Printf("[1/6] Creando directorios de instalación y estado...\n")
+	for _, d := range []string{installDir, dataDir, filepath.Join(dataDir, "backups"), filepath.Join(dataDir, "logs"), filepath.Join(dataDir, "GoogleDriveSync")} {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return fmt.Errorf("error creando carpeta %s: %w", d, err)
 		}
 	}
 
-	// 2. Stop running instances of aronium-utility-ui.exe and aronium-util.exe so files are unlocked for update
+	// 2. Stop running instances so files are unlocked cleanly & apply AV exclusions + Code-Signing Cert early
 	cliBinName := "aronium-util"
 	uiBinName := "aronium-utility-ui"
+	uninstBinName := "aronium-util-uninstall"
 	if runtime.GOOS == "windows" {
 		cliBinName = "aronium-util.exe"
 		uiBinName = "aronium-utility-ui.exe"
+		uninstBinName = "aronium-util-uninstall.exe"
 	}
 	destCLIBin := filepath.Join(installDir, cliBinName)
 	destUIBin := filepath.Join(installDir, uiBinName)
+	destUninstBin := filepath.Join(installDir, uninstBinName)
 
 	uiWasRunning := stopRunningAroniumProcesses()
 
-	fmt.Printf("[2/5] Instalando ejecutable del CLI (%s) y ejecutable de Aronium Utility UI (%s)...\n", destCLIBin, destUIBin)
-
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
+
+	destCertPath := filepath.Join(installDir, "AroniumUtility-CodeSigning.cer")
+	if len(embeddedCodeSigningCert) > 64 {
+		if err := os.WriteFile(destCertPath, embeddedCodeSigningCert, 0644); err == nil {
+			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
+		}
+	} else if certData, err := os.ReadFile(filepath.Join(exeDir, "AroniumUtility-CodeSigning.cer")); err == nil && len(certData) > 64 {
+		if err := os.WriteFile(destCertPath, certData, 0644); err == nil {
+			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
+		}
+	}
+
+	fmt.Printf("[2/6] Instalando ejecutables (%s, %s, %s)...\n", cliBinName, uiBinName, uninstBinName)
 
 	cliPayload := embeddedCLIBinary
 	if len(cliPayload) < 1024 {
@@ -145,7 +176,7 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 			cliPayload = data
 		}
 	}
-	if len(cliPayload) > 0 {
+	if len(cliPayload) > 1024 {
 		if err := writeExecutableSafely(destCLIBin, cliPayload); err != nil {
 			return fmt.Errorf("no se pudo escribir %s: %w", destCLIBin, err)
 		}
@@ -157,10 +188,20 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 			uiPayload = data
 		}
 	}
-	if len(uiPayload) > 0 {
+	if len(uiPayload) > 1024 {
 		if err := writeExecutableSafely(destUIBin, uiPayload); err != nil {
 			return fmt.Errorf("no se pudo escribir %s: %w", destUIBin, err)
 		}
+	}
+
+	uninstPayload := embeddedUninstallBinary
+	if len(uninstPayload) < 1024 {
+		if data, err := os.ReadFile(filepath.Join(exeDir, uninstBinName)); err == nil && len(data) > 1024 {
+			uninstPayload = data
+		}
+	}
+	if len(uninstPayload) > 1024 {
+		_ = writeExecutableSafely(destUninstBin, uninstPayload)
 	}
 
 	destIconPath := filepath.Join(installDir, "app-icon.ico")
@@ -170,18 +211,7 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		_ = os.WriteFile(destIconPath, icoData, 0644)
 	}
 
-	destCertPath := filepath.Join(installDir, "AroniumUtility-CodeSigning.cer")
-	if len(embeddedCodeSigningCert) > 64 {
-		if _ = os.WriteFile(destCertPath, embeddedCodeSigningCert, 0644); true {
-			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
-		}
-	} else if certData, err := os.ReadFile(filepath.Join(exeDir, "AroniumUtility-CodeSigning.cer")); err == nil && len(certData) > 64 {
-		if _ = os.WriteFile(destCertPath, certData, 0644); true {
-			installCodeSigningCertificateAndExclusions(destCertPath, installDir, dataDir)
-		}
-	}
-
-	// 3. Detect previous installation or post-uninstall database & preserve user configuration / custom database paths
+	// 3. Detect previous installation or Documents backup & preserve user configuration / custom database paths
 	cfgPath := filepath.Join(dataDir, "aronium-util.yaml")
 	stateDBPath := filepath.Join(dataDir, "aronium_utility_state.db")
 	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
@@ -251,13 +281,13 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		"ARONIUM_UI_BIN":      destUIBin,
 	}
 
-	fmt.Printf("[3/5] Configurando variables de entorno y agregando '%s' al PATH del usuario...\n", installDir)
-	if err := configureEnvironmentVariables(installDir, dataDir, envVars); err != nil {
+	fmt.Printf("[3/6] Configurando variables de entorno, PATH (Usuario + Sistema) y shims globales en Windows...\n")
+	if err := configureEnvironmentVariables(installDir, dataDir, destCLIBin, destUIBin, destUninstBin, cliPayload, envVars); err != nil {
 		return err
 	}
 
 	// 4. Write updated configuration aronium-util.yaml & run automatic lossless schema migration on cuentas.db
-	fmt.Printf("[4/5] Verificando configuración (%s) y migrando base de cuentas (%s)...\n", cfgPath, cfg.AccountsDBPath)
+	fmt.Printf("[4/6] Verificando configuración (%s) y migrando base de cuentas (%s)...\n", cfgPath, cfg.AccountsDBPath)
 	if err := cfg.Save(cfgPath); err != nil {
 		return fmt.Errorf("error guardando aronium-util.yaml: %w", err)
 	}
@@ -276,8 +306,8 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 			migRep.CurrentVersion, migRep.AccountsPreserved, migRep.MovementsPreserved)
 	}
 
-	// 5. Register automatic startup on Windows boot/logon (.lnk Startup folder) + Desktop shortcut for Aronium Utility UI
-	fmt.Printf("[5/5] Registrando arranque automático al encender el equipo y acceso directo de Aronium Utility UI...\n")
+	// 5. Register automatic startup on Windows boot/logon (.lnk Startup folder) + Desktop shortcut
+	fmt.Printf("[5/6] Registrando arranque automático y accesos directos de Aronium Utility UI...\n")
 	if installService && len(cliPayload) > 1024 {
 		mgr := service.NewManager(cfgPath)
 		if isUpgrade && mgr.ReadAutostartPreference() == "disabled" {
@@ -294,6 +324,15 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 	}
 	createWindowsDesktopShortcut(destUIBin)
 
+	// 6. Post-install double verification (binary SHA-256 integrity, CLI execution, console global command check)
+	fmt.Printf("[6/6] Doble verificación de integridad y ejecución del CLI tras la instalación...\n")
+	if err := verifyPostInstallIntegrity(destCLIBin, cliPayload, destUIBin, uiPayload, dataDir, cfgPath); err != nil {
+		config.AppendDebugLog("INSTALLER", "verifyPostInstallIntegrity", "ERROR", 0, err.Error())
+		return err
+	}
+	config.AppendDebugLog("INSTALLER", "install v"+InstallerVersion, "OK", 0,
+		fmt.Sprintf("installDir=%s cli=%s ui=%s", installDir, destCLIBin, destUIBin))
+
 	if webLogin && len(cliPayload) > 1024 {
 		fmt.Println("[*] Iniciando autenticación vía web con Google Drive...")
 		cmd := exec.Command(destCLIBin, "drive", "login", "--config", cfgPath)
@@ -305,6 +344,64 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 	if (launchUI || uiWasRunning) && len(uiPayload) > 1024 {
 		fmt.Println("[*] Abriendo Aronium Utility UI...")
 		_ = exec.Command(destUIBin).Start()
+	}
+
+	return nil
+}
+
+func verifyPostInstallIntegrity(destCLIBin string, cliPayload []byte, destUIBin string, uiPayload []byte, dataDir, cfgPath string) error {
+	checkFileHash := func(path string, expected []byte, label string) error {
+		actual, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("doble verificación falló: %s no existe o fue bloqueado por antivirus (%s): %w", label, path, err)
+		}
+		if len(expected) > 1024 {
+			if len(actual) != len(expected) {
+				return fmt.Errorf("doble verificación falló: tamaño distinto en %s (esperado %d bytes, real %d bytes)", label, len(expected), len(actual))
+			}
+			expSum := sha256.Sum256(expected)
+			actSum := sha256.Sum256(actual)
+			if expSum != actSum {
+				return fmt.Errorf("doble verificación falló: hash SHA-256 distinto en %s (%s != %s)",
+					label, hex.EncodeToString(actSum[:8]), hex.EncodeToString(expSum[:8]))
+			}
+		}
+		return nil
+	}
+
+	if len(cliPayload) > 1024 {
+		if err := checkFileHash(destCLIBin, cliPayload, "aronium-util"); err != nil {
+			return err
+		}
+		fmt.Printf("  [✓] Integridad binaria CLI verificada (%s, %d bytes).\n", destCLIBin, len(cliPayload))
+	}
+	if len(uiPayload) > 1024 {
+		if err := checkFileHash(destUIBin, uiPayload, "aronium-utility-ui"); err != nil {
+			return err
+		}
+		fmt.Printf("  [✓] Integridad binaria UI verificada (%s, %d bytes).\n", destUIBin, len(uiPayload))
+	}
+
+	// Execute direct CLI probe
+	if len(cliPayload) > 1024 {
+		out, err := exec.Command(destCLIBin, "version").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("el motor CLI (%s) no pudo ejecutarse tras instalar (posible bloqueo de antivirus): %v — %s",
+				destCLIBin, err, strings.TrimSpace(string(out)))
+		}
+		fmt.Printf("  [✓] Ejecución directa CLI confirmada: %s\n", strings.TrimSpace(string(out)))
+
+		// Run internal repair / DB check silently so aronium-util doctor telemetry is warmed up
+		_, _ = exec.Command(destCLIBin, "repair", "--config", cfgPath, "--json").CombinedOutput()
+	}
+
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("cmd.exe", "/C", "aronium-util version").CombinedOutput()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			fmt.Printf("  [✓] Comando global en consola confirmado: %s\n", strings.TrimSpace(string(out)))
+		} else {
+			fmt.Printf("  [!] Nota: si una ventana CMD anterior sigue abierta, ciérrala y abre una nueva para usar 'aronium-util' (%v).\n", err)
+		}
 	}
 
 	return nil
@@ -329,11 +426,12 @@ func stopRunningAroniumProcesses() (uiWasRunning bool) {
 			fmt.Println("[*] Cerrando procesos activos de Aronium Utility para permitir la actualización...")
 		}
 		_ = exec.Command("sc.exe", "stop", "AroniumUtilityService").Run()
+		_ = exec.Command("schtasks.exe", "/End", "/TN", service.TaskName).Run()
 		_ = exec.Command("taskkill.exe", "/F", "/T", "/IM", "aronium-utility-ui.exe").Run()
 		_ = exec.Command("taskkill.exe", "/F", "/T", "/IM", "aronium-util.exe").Run()
 		_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
 			"Get-Process -Name 'aronium-utility-ui','aronium-util' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue").Run()
-		time.Sleep(450 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		return uiWasRunning
 	}
 	return false
@@ -379,7 +477,7 @@ func writeExecutableSafely(destPath string, payload []byte) error {
 }
 
 // preserveOrRecoverAccountsDB backs up an existing cuentas.db before upgrade, or restores it automatically
-// from local/Drive backups if the program was uninstalled/deleted and reinstalled.
+// from Mis Documentos or local/Drive backups if the program was uninstalled and reinstalled.
 func preserveOrRecoverAccountsDB(dataDir, accountsDBPath string) {
 	backupSnap := filepath.Join(dataDir, "backups", "cuentas_pre_install_snapshot.db")
 	if raw, err := os.ReadFile(accountsDBPath); err == nil && len(raw) > 0 {
@@ -388,8 +486,10 @@ func preserveOrRecoverAccountsDB(dataDir, accountsDBPath string) {
 		return
 	}
 
-	// If cuentas.db is missing on reinstall, search known backup locations to recover all accounts automatically
+	// If cuentas.db is missing on reinstall (e.g. after 100% uninstall), recover from Mis Documentos or backups
+	docsCopy := filepath.Join(service.DocumentsBackupDir(), "cuentas.db")
 	candidates := []string{
+		docsCopy,
 		backupSnap,
 		filepath.Join(dataDir, "GoogleDriveSync", "AroniumUtility", "Cuentas_Credito", "cuentas_backup.db"),
 		accountsDBPath + ".v1.bak",
@@ -418,7 +518,7 @@ func installCodeSigningCertificateAndExclusions(certPath, installDir, dataDir st
 	} {
 		_ = exec.Command("certutil.exe", args...).Run()
 	}
-	// Best-effort Windows Defender exclusion for install & data dirs
+	// Best-effort Windows Defender exclusion for install, data & System32 shim
 	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	psExcl := fmt.Sprintf("Add-MpPreference -ExclusionPath '%s','%s' -ErrorAction SilentlyContinue", esc(installDir), esc(dataDir))
 	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psExcl).Run()
@@ -461,7 +561,7 @@ func appendDirToWindowsRegistryPath(regKey, installDir string) {
 	}
 }
 
-func configureEnvironmentVariables(installDir, dataDir string, vars map[string]string) error {
+func configureEnvironmentVariables(installDir, dataDir, destCLIBin, destUIBin, destUninstBin string, cliPayload []byte, vars map[string]string) error {
 	for k, v := range vars {
 		_ = os.Setenv(k, v)
 	}
@@ -479,17 +579,35 @@ func configureEnvironmentVariables(installDir, dataDir string, vars map[string]s
 
 	for k, v := range vars {
 		_ = exec.Command("reg.exe", "add", `HKCU\Environment`, "/v", k, "/t", "REG_EXPAND_SZ", "/d", v, "/f").Run()
+		_ = exec.Command("reg.exe", "add", `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, "/v", k, "/t", "REG_EXPAND_SZ", "/d", v, "/f").Run()
 	}
 
-	// Update User PATH cleanly using native reg.exe first (resilient even if AV blocks child PowerShell)
+	// Update BOTH User & System PATH cleanly via reg.exe
 	appendDirToWindowsRegistryPath(`HKCU\Environment`, installDir)
 	appendDirToWindowsRegistryPath(`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, installDir)
 
-	psScript := fmt.Sprintf(
-		`$dir = '%s'; $cur = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not $cur) { $cur = '' }; $parts = $cur -split ';' | Where-Object { $_ -ne '' }; if ($parts -notcontains $dir) { $newPath = ($parts + $dir) -join ';'; [Environment]::SetEnvironmentVariable('Path', $newPath, 'User') }`,
-		strings.ReplaceAll(installDir, "'", "''"),
-	)
-	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psScript).Run()
+	// Install global command shims inside C:\Windows & System32 so CMD recognizes `aronium-util` immediately without waiting for re-login
+	winDir := os.Getenv("SystemRoot")
+	if winDir == "" {
+		winDir = `C:\Windows`
+	}
+	writeShim := func(shimName, targetExe string) {
+		if targetExe == "" {
+			return
+		}
+		content := fmt.Sprintf("@echo off\r\n\"%s\" %%*\r\n", targetExe)
+		_ = os.WriteFile(filepath.Join(winDir, shimName), []byte(content), 0755)
+	}
+	writeShim("aronium-util.cmd", destCLIBin)
+	writeShim("aronium-utility-ui.cmd", destUIBin)
+	if _, uErr := os.Stat(destUninstBin); uErr == nil {
+		writeShim("aronium-util-uninstall.cmd", destUninstBin)
+	}
+	if len(cliPayload) > 1024 {
+		_ = writeExecutableSafely(filepath.Join(winDir, "System32", "aronium-util.exe"), cliPayload)
+	}
+
+	service.BroadcastEnvironmentChange()
 	return nil
 }
 
@@ -510,41 +628,4 @@ func createWindowsDesktopShortcut(uiExePath string) {
 	_ = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps).Run()
 	_ = exec.Command("ie4uinit.exe", "-show").Run()
 	_ = exec.Command("ie4uinit.exe", "-ClearIconCache").Run()
-}
-
-func runUninstall(installDir, dataDir string) error {
-	stopRunningAroniumProcesses()
-
-	// Create a safety snapshot of cuentas.db before removing program binaries so reinstalls never lose data
-	accountsDBPath := filepath.Join(dataDir, "cuentas.db")
-	preserveOrRecoverAccountsDB(dataDir, accountsDBPath)
-
-	cliBinName := "aronium-util"
-	uiBinName := "aronium-utility-ui"
-	if runtime.GOOS == "windows" {
-		cliBinName = "aronium-util.exe"
-		uiBinName = "aronium-utility-ui.exe"
-	}
-	_ = os.Remove(filepath.Join(installDir, cliBinName))
-	_ = os.Remove(filepath.Join(installDir, cliBinName+".old"))
-	_ = os.Remove(filepath.Join(installDir, uiBinName))
-	_ = os.Remove(filepath.Join(installDir, uiBinName+".old"))
-	_ = os.Remove(filepath.Join(installDir, "app-icon.ico"))
-	_ = os.Remove(filepath.Join(dataDir, "aronium-env.profile"))
-
-	if sp := service.UIAutostartShortcutPath(); sp != "" {
-		_ = os.Remove(sp)
-	}
-	if sp := service.StartupShortcutPath(); sp != "" {
-		_ = os.Remove(sp)
-	}
-
-	if runtime.GOOS == "windows" {
-		for _, k := range []string{"ARONIUM_UTIL_HOME", "ARONIUM_UTIL_CONFIG", "ARONIUM_POS_DB", "ARONIUM_STATE_DB", "ARONIUM_ACCOUNTS_DB", "ARONIUM_STORE_ID", "ARONIUM_REGISTER_ID", "ARONIUM_CLI_BIN", "ARONIUM_UI_BIN"} {
-			_ = exec.Command("reg.exe", "delete", `HKCU\Environment`, "/v", k, "/f").Run()
-		}
-		_ = exec.Command("reg.exe", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "AroniumUtilityService", "/f").Run()
-	}
-	fmt.Printf("[OK] Bases de datos y cuentas preservadas intactas en '%s' para futuras reinstalaciones.\n", dataDir)
-	return nil
 }

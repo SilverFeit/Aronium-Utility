@@ -293,6 +293,41 @@ export interface BackupManifest {
   created_at: string;
 }
 
+export interface BackedUpDBFile {
+  name: string;
+  source_path: string;
+  local_path: string;
+  logical_path: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface AllDBsBackupResult {
+  timestamp: string;
+  backup_folder: string;
+  zip_archive_path: string;
+  zip_logical_path: string;
+  zip_sha256: string;
+  documents_accounts_copy?: string;
+  files: BackedUpDBFile[];
+  drive_connected: boolean;
+  uploaded_drive_ids: Record<string, string>;
+  upload_warnings?: string[];
+  message: string;
+}
+
+export interface DebugLogsPayload {
+  ui_version?: string;
+  cli_version?: string;
+  cli_bin_path: string;
+  cli_bin_exists: boolean;
+  app_data_dir: string;
+  debug_log_path: string;
+  service_log_path: string;
+  debug_log: string;
+  service_log: string;
+}
+
 export interface UpdateCheckResult {
   checked_at: string;
   repository: string;

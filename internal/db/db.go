@@ -652,25 +652,39 @@ func ListDocuments(posDB *sql.DB, sinceDocID int64, defaultRegisterID string) ([
 		}
 		rows.Close()
 
-		for i := range docs {
-			items, err := listDocumentItems(posDB, docs[i].ID)
-			if err == nil {
-				docs[i].Items = items
+		if len(docs) == 0 {
+			return docs, nil
+		}
+
+		itemsByDoc, err := loadDocumentItemsSince(posDB, sinceDocID)
+		if err == nil {
+			for i := range docs {
+				if its, ok := itemsByDoc[docs[i].ID]; ok {
+					docs[i].Items = its
+				}
 			}
-			payments, err := listDocumentPayments(posDB, docs[i].ID)
-			if err == nil {
-				docs[i].Payments = payments
+		}
+		paymentsByDoc, err := loadDocumentPaymentsSince(posDB, sinceDocID)
+		if err == nil {
+			for i := range docs {
+				if pms, ok := paymentsByDoc[docs[i].ID]; ok {
+					docs[i].Payments = pms
+				}
 			}
 		}
 		return docs, nil
 	})
 }
 
-func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
+func loadDocumentItemsSince(posDB *sql.DB, sinceDocID int64) (map[int64][]DocumentItem, error) {
+	result := make(map[int64][]DocumentItem)
 	if !tableExists(posDB, "DocumentItem") {
-		return nil, nil
+		return result, nil
 	}
 	diCols := tableColumns(posDB, "DocumentItem")
+	if !diCols["documentid"] {
+		return result, nil
+	}
 	hasProd := tableExists(posDB, "Product")
 	pCols := map[string]bool{}
 	prodJoin := ""
@@ -708,7 +722,7 @@ func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
 			%s
 		FROM DocumentItem di
 		%s
-		WHERE di.DocumentId = ?
+		WHERE di.DocumentId > ?
 		ORDER BY di.Id ASC;
 	`,
 		colExpr(diCols, "di", "DocumentId", "0"),
@@ -724,12 +738,11 @@ func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
 		prodJoin,
 	)
 
-	rows, err := posDB.Query(query, docID)
+	rows, err := posDB.Query(query, sinceDocID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []DocumentItem
 	for rows.Next() {
 		var it DocumentItem
 		if err := rows.Scan(
@@ -739,16 +752,20 @@ func listDocumentItems(posDB *sql.DB, docID int64) ([]DocumentItem, error) {
 		); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		result[it.DocumentID] = append(result[it.DocumentID], it)
 	}
-	return items, nil
+	return result, nil
 }
 
-func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
+func loadDocumentPaymentsSince(posDB *sql.DB, sinceDocID int64) (map[int64][]Payment, error) {
+	result := make(map[int64][]Payment)
 	if !tableExists(posDB, "Payment") {
-		return nil, nil
+		return result, nil
 	}
 	pmCols := tableColumns(posDB, "Payment")
+	if !pmCols["documentid"] {
+		return result, nil
+	}
 	hasPT := tableExists(posDB, "PaymentType")
 	ptCols := map[string]bool{}
 	ptJoin := ""
@@ -769,7 +786,7 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 			%s
 		FROM Payment pm
 		%s
-		WHERE pm.DocumentId = ?
+		WHERE pm.DocumentId > ?
 		ORDER BY pm.Id ASC;
 	`,
 		colExpr(pmCols, "pm", "DocumentId", "0"),
@@ -782,12 +799,11 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 		ptJoin,
 	)
 
-	rows, err := posDB.Query(query, docID)
+	rows, err := posDB.Query(query, sinceDocID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Payment
 	for rows.Next() {
 		var p Payment
 		var markPaid int
@@ -798,9 +814,9 @@ func listDocumentPayments(posDB *sql.DB, docID int64) ([]Payment, error) {
 			return nil, err
 		}
 		p.MarkAsPaid = markPaid != 0
-		out = append(out, p)
+		result[p.DocumentID] = append(result[p.DocumentID], p)
 	}
-	return out, nil
+	return result, nil
 }
 
 // ListProductsWithStock returns the complete product catalog joined dynamically across all Aronium Lite schema variants (TODO-022, TODO-103).

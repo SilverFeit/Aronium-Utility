@@ -25,7 +25,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const AppVersion = "2.0.1"
+const AppVersion = "2.0.2"
 
 //go:embed all:dist
 var embeddedFrontend embed.FS
@@ -88,6 +88,8 @@ func main() {
 	}
 
 	cliBin := locateAroniumCLISidecar()
+	config.AppendDebugLog("UI-BOOT", "aronium-utility-ui start", "INFO", 0,
+		fmt.Sprintf("version=%s pid=%d cliBin=%s appData=%s", AppVersion, os.Getpid(), cliBin, config.DefaultAppDataDir()))
 	selfExe, _ := os.Executable()
 	svcMgr := service.NewManager("")
 	if cliBin != "" {
@@ -107,8 +109,10 @@ func main() {
 		watchCmd = exec.Command(cliBin, "watch")
 		service.HideChildWindow(watchCmd)
 		if err := watchCmd.Start(); err != nil {
+			config.AppendDebugLog("UI-WATCH", cliBin+" watch", "ERROR", 0, err.Error())
 			watchCmd = nil
 		} else {
+			config.AppendDebugLog("UI-WATCH", cliBin+" watch", "STARTED", 0, fmt.Sprintf("pid=%d", watchCmd.Process.Pid))
 			go func(c *exec.Cmd) { _ = c.Wait() }(watchCmd)
 		}
 	}
@@ -174,6 +178,39 @@ func main() {
 		_, _ = w.Write([]byte(`{"opened":true}`))
 	})
 
+	// Debug Telemetry & Logs Endpoints (Modo Avanzado -> Logs de Debug)
+	mux.HandleFunc("/api/debug/logs", func(w http.ResponseWriter, r *http.Request) {
+		resolvedCLI := locateAroniumCLISidecar()
+		cliInfo, cliStatErr := os.Stat(resolvedCLI)
+		cliExists := cliStatErr == nil && !cliInfo.IsDir()
+		dbgText, _ := config.ReadDebugLogs(65536)
+		svcText, _ := config.ReadServiceLogs(32768)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ui_version":       AppVersion,
+			"cli_bin_path":     resolvedCLI,
+			"cli_bin_exists":   cliExists,
+			"app_data_dir":     config.DefaultAppDataDir(),
+			"debug_log_path":   config.DebugLogPath(),
+			"service_log_path": config.ServiceLogPath(),
+			"debug_log":        dbgText,
+			"service_log":      svcText,
+		})
+	})
+
+	mux.HandleFunc("/api/debug/logs/clear", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := config.ClearDebugLogs(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"cleared":true}`))
+	})
+
 	// IPC Endpoint: Spawns `aronium-util` CLI sidecar and returns its JSON stdout (Zero duplicated business logic)
 	mux.HandleFunc("/api/ipc/cli", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -188,16 +225,25 @@ func main() {
 			return
 		}
 
+		activeCLI := locateAroniumCLISidecar()
+		cmdLabel := strings.Join(req.Args, " ")
+		start := time.Now()
+
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, cliBin, req.Args...)
+		cmd := exec.CommandContext(ctx, activeCLI, req.Args...)
 		service.HideChildWindow(cmd)
 		out, err := cmd.CombinedOutput()
+		elapsedMs := time.Since(start).Milliseconds()
+
 		if err != nil {
-			http.Error(w, fmt.Sprintf("CLI sidecar error (%v): %s", err, strings.TrimSpace(string(out))), http.StatusBadGateway)
+			errMsg := fmt.Sprintf("CLI sidecar error (%v) [bin=%s]: %s", err, activeCLI, strings.TrimSpace(string(out)))
+			config.AppendDebugLog("UI-IPC", cmdLabel, "ERROR", elapsedMs, errMsg)
+			http.Error(w, errMsg, http.StatusBadGateway)
 			return
 		}
+		config.AppendDebugLog("UI-IPC", cmdLabel, "OK", elapsedMs, fmt.Sprintf("bytes=%d", len(out)))
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write(out)
 	})
@@ -366,6 +412,17 @@ func locateAroniumCLISidecar() string {
 		if _, err := os.Stat(installed); err == nil {
 			return installed
 		}
+	}
+	if runtime.GOOS == "windows" {
+		if winDir := os.Getenv("SystemRoot"); winDir != "" {
+			sysBin := filepath.Join(winDir, "System32", binName)
+			if _, err := os.Stat(sysBin); err == nil {
+				return sysBin
+			}
+		}
+	}
+	if lookedUp, err := exec.LookPath(binName); err == nil {
+		return lookedUp
 	}
 	return binName
 }

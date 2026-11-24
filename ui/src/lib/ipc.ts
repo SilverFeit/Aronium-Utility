@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { DebugLogsPayload } from './types';
 
 /**
  * Aronium Utility UI — Tauri 2 IPC + Sidecar Bridge.
@@ -29,4 +30,26 @@ export async function runAroniumCLI<T>(args: string[]): Promise<T> {
   }
 
   return (await resp.json()) as T;
+}
+
+export async function fetchDebugLogs(): Promise<DebugLogsPayload> {
+  if (isTauriRuntime()) {
+    return await runAroniumCLI<DebugLogsPayload>(['logs', '--json']);
+  }
+  const resp = await fetch('/api/debug/logs');
+  if (!resp.ok) {
+    throw new Error((await resp.text()) || `HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as DebugLogsPayload;
+}
+
+export async function clearDebugLogs(): Promise<void> {
+  if (isTauriRuntime()) {
+    await runAroniumCLI(['logs', '--clear', '--json']);
+    return;
+  }
+  const resp = await fetch('/api/debug/logs/clear', { method: 'POST' });
+  if (!resp.ok) {
+    throw new Error((await resp.text()) || `HTTP ${resp.status}`);
+  }
 }

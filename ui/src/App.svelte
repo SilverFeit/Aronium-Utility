@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { runAroniumCLI } from './lib/ipc';
+  import { clearDebugLogs, fetchDebugLogs, runAroniumCLI } from './lib/ipc';
   import type {
     AccountMovementItemInput,
     AccountsLedgerReport,
+    AllDBsBackupResult,
     BackupManifest,
     CatalogProduct,
     CatalogSearchResponse,
@@ -11,6 +12,7 @@
     CustomerAccount,
     DailyClosingReport,
     DashboardSnapshot,
+    DebugLogsPayload,
     DoctorReport,
     DriveStatus,
     InventoryItem,
@@ -23,12 +25,21 @@
 
   type UIMode = 'basic' | 'advanced';
   type BasicTab = 'create' | 'accounts' | 'inventory' | 'setup';
-  type AdvTab = 'dashboard' | 'accounts' | 'inventory' | 'registers' | 'drive' | 'doctor';
+  type AdvTab = 'dashboard' | 'accounts' | 'inventory' | 'registers' | 'drive' | 'doctor' | 'logs';
 
   let uiMode = $state<UIMode>('basic');
   let basicTab = $state<BasicTab>('create');
   let advTab = $state<AdvTab>('dashboard');
   let loading = $state(false);
+  let refreshing = $state(false);
+  let savingAccount = $state(false);
+  let recordingPayment = $state(false);
+  let syncingDrive = $state(false);
+  let backingUpAllDBs = $state(false);
+  let loadingLogs = $state(false);
+  let cliPingResult = $state('');
+  let debugLogs = $state<DebugLogsPayload | null>(null);
+  let lastAllDBsBackup = $state<AllDBsBackupResult | null>(null);
   let toastMessage = $state('');
   let toastError = $state(false);
   let showDbModal = $state(false);
@@ -225,7 +236,7 @@
   }
 
   async function refreshAll() {
-    loading = true;
+    refreshing = true;
     try {
       const [cfgRes, docRes, accRes, drvRes, srvRes] = await Promise.all([
         runAroniumCLI<ConfigInfoResponse>(['config', 'get', '--json']),
@@ -270,17 +281,19 @@
       if (!customAccountsDbPath) customAccountsDbPath = cfgRes.config.accounts_db_path;
 
       if (docRes.pos_db_readable) {
-        await searchCatalog(scannerQuery);
-        try {
-          snapshot = await runAroniumCLI<DashboardSnapshot>(['admin', '--json']);
-        } catch {
-          snapshot = null;
-        }
-        try {
-          dailyReport = await runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']);
-        } catch {
-          dailyReport = null;
-        }
+        void searchCatalog(scannerQuery);
+        void (async () => {
+          try {
+            snapshot = await runAroniumCLI<DashboardSnapshot>(['admin', '--json']);
+          } catch {
+            snapshot = null;
+          }
+          try {
+            dailyReport = await runAroniumCLI<DailyClosingReport>(['reports', 'daily', '--deliver=false', '--json']);
+          } catch {
+            dailyReport = null;
+          }
+        })();
       } else {
         snapshot = null;
         dailyReport = null;
@@ -289,7 +302,7 @@
     } catch (e: any) {
       showToast(`Error comunicando con aronium-util: ${e?.message || e}`, true);
     } finally {
-      loading = false;
+      refreshing = false;
     }
   }
 
@@ -518,7 +531,7 @@
       return;
     }
 
-    loading = true;
+    savingAccount = true;
     try {
       if (accountActionMode === 'new') {
         const fullId = `${cleanPrefix}-${cleanNum}`;
@@ -559,7 +572,7 @@
       } else {
         if (cartItems.length === 0) {
           showToast('Escanea, agrega un artículo o ingresa un valor puntual para anotar en la cuenta.', true);
-          loading = false;
+          savingAccount = false;
           return;
         }
         const args = [
@@ -604,7 +617,7 @@
     } catch (e: any) {
       showToast(`Error guardando cuenta: ${e?.message || e}`, true);
     } finally {
-      loading = false;
+      savingAccount = false;
     }
   }
 
@@ -613,7 +626,7 @@
       showToast('Ingresa un monto de pago válido mayor a 0.', true);
       return;
     }
-    loading = true;
+    recordingPayment = true;
     try {
       await runAroniumCLI([
         'accounts',
@@ -644,7 +657,7 @@
     } catch (e: any) {
       showToast(`Error registrando pago: ${e?.message || e}`, true);
     } finally {
-      loading = false;
+      recordingPayment = false;
     }
   }
 
@@ -738,7 +751,7 @@
   }
 
   async function handleSyncDrive() {
-    loading = true;
+    syncingDrive = true;
     try {
       lastSyncResult = await runAroniumCLI<SyncResult>(['sync', '--json']);
       await refreshAll();
@@ -746,7 +759,72 @@
     } catch (e: any) {
       showToast(`Error sincronizando con Google Drive: ${e?.message || e}`, true);
     } finally {
-      loading = false;
+      syncingDrive = false;
+    }
+  }
+
+  async function handleBackupAllDBsToDrive() {
+    backingUpAllDBs = true;
+    try {
+      const res = await runAroniumCLI<AllDBsBackupResult>(['backup', 'all-dbs', '--json']);
+      lastAllDBsBackup = res;
+      showToast(res.message);
+    } catch (e: any) {
+      showToast(`Error respaldando bases de datos (.db): ${e?.message || e}`, true);
+    } finally {
+      backingUpAllDBs = false;
+    }
+  }
+
+  async function handleLoadDebugLogs() {
+    loadingLogs = true;
+    try {
+      debugLogs = await fetchDebugLogs();
+    } catch (e: any) {
+      showToast(`Error cargando logs de debug: ${e?.message || e}`, true);
+    } finally {
+      loadingLogs = false;
+    }
+  }
+
+  async function handleClearLogs() {
+    loadingLogs = true;
+    try {
+      await clearDebugLogs();
+      await handleLoadDebugLogs();
+      showToast('Historial de logs de debug limpiado.');
+    } catch (e: any) {
+      showToast(`Error limpiando logs: ${e?.message || e}`, true);
+    } finally {
+      loadingLogs = false;
+    }
+  }
+
+  async function handlePingCLI() {
+    loadingLogs = true;
+    const t0 = performance.now();
+    try {
+      const rep = await runAroniumCLI<DoctorReport>(['doctor', '--json']);
+      const ms = Math.round(performance.now() - t0);
+      cliPingResult = `✓ CLI respondió en ${ms} ms · pos.db=${rep.pos_db_readable ? 'OK' : 'Pendiente'} (${rep.pos_db_product_count ?? 0} productos) · cuentas.db=${rep.accounts_db_ready ? 'OK' : 'Error'} (${rep.accounts_count ?? 0} cuentas)`;
+      await handleLoadDebugLogs();
+    } catch (e: any) {
+      const ms = Math.round(performance.now() - t0);
+      cliPingResult = `✗ Error CLI (${ms} ms): ${e?.message || e}`;
+      await handleLoadDebugLogs();
+    } finally {
+      loadingLogs = false;
+    }
+  }
+
+  async function handleCopyLogs() {
+    if (!debugLogs) return;
+    const text = `=== INFO SIDECAR CLI ===\nVersión UI: ${debugLogs.ui_version || debugLogs.cli_version || 'N/A'}\nRuta CLI: ${debugLogs.cli_bin_path} (Existe: ${debugLogs.cli_bin_exists})\nAppData: ${debugLogs.app_data_dir}\n\n=== DEBUG LOG (${debugLogs.debug_log_path}) ===\n${debugLogs.debug_log}\n\n=== SERVICE LOG (${debugLogs.service_log_path}) ===\n${debugLogs.service_log}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Logs de debug copiados al portapapeles.');
+    } catch {
+      showToast('Selecciona el texto de los logs manualmente para copiarlo.', true);
     }
   }
 
@@ -1403,18 +1481,21 @@
           <button class="btn btn-green" disabled={loading} onclick={() => handleSaveDatabasePaths(false, false)}>
             Guardar y Conectar Bases de Datos
           </button>
-          <button class="btn btn-outline" disabled={loading || repairing} onclick={handleRunRepair}>
+          <button class="btn" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
+            {backingUpAllDBs ? 'Respaldando todas las .db...' : '☁️ Respaldar Todas las Bases (.db) a Drive'}
+          </button>
+          <button class="btn btn-outline" disabled={repairing} onclick={handleRunRepair}>
             {repairing ? 'Reparando...' : '🛠️ Reparar y Verificar Conexión'}
           </button>
-          <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(true, false)}>
+          <button class="btn btn-outline" onclick={() => handleSaveDatabasePaths(true, false)}>
             Ruta por Defecto
           </button>
-          <button class="btn btn-outline" disabled={loading} onclick={() => handleSaveDatabasePaths(false, true)}>
+          <button class="btn btn-outline" onclick={() => handleSaveDatabasePaths(false, true)}>
             Crear BD Prueba
           </button>
           <button
             class="btn btn-red"
-            disabled={loading || resettingAccountsTable}
+            disabled={resettingAccountsTable}
             onclick={() => {
               if (hasAdvancedPin && !advancedUnlocked) {
                 pendingPinAction = 'reset_accounts_table';
@@ -1429,6 +1510,15 @@
             🗑️ Borrar Tabla Cuentas y Volver a Crear
           </button>
         </div>
+        {#if lastAllDBsBackup}
+          <div style="margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: rgba(16, 185, 129, 0.12); border: 1px solid var(--accent-green); font-size: 12px; color: var(--text-green-soft);">
+            <strong>✓ {lastAllDBsBackup.message}</strong><br />
+            Paquete ZIP: <code>{lastAllDBsBackup.zip_archive_path}</code>
+            {#if lastAllDBsBackup.documents_accounts_copy}
+              <br />Copia Mis Documentos: <code>{lastAllDBsBackup.documents_accounts_copy}</code>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -1664,7 +1754,6 @@
               <input
                 type="checkbox"
                 checked={autoSyncLive}
-                disabled={loading}
                 onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
               />
               <span>
@@ -1675,10 +1764,10 @@
             <button
               class="btn btn-green"
               style="width: 100%; margin-top: 12px; padding: 13px; font-size: 14.5px;"
-              disabled={loading}
+              disabled={savingAccount}
               onclick={handleSaveAccountAndItems}
             >
-              {loading
+              {savingAccount
                 ? autoSyncLive
                   ? 'Guardando y Sincronizando...'
                   : 'Guardando en Local...'
@@ -2011,10 +2100,14 @@
             <button
               class="btn btn-green"
               style="margin-top: 14px;"
-              disabled={loading}
+              disabled={recordingPayment}
               onclick={handleRecordPayment}
             >
-              Confirmar Pago para {activePayAccount.nombre} y Actualizar Google Drive
+              {recordingPayment
+                ? 'Registrando Pago...'
+                : autoSyncLive
+                  ? `Confirmar Pago para ${activePayAccount.nombre} y Sincronizar Drive`
+                  : `Confirmar Pago en Local para ${activePayAccount.nombre}`}
             </button>
           </div>
         {/if}
@@ -2244,7 +2337,6 @@
               <input
                 type="checkbox"
                 checked={autoSyncLive}
-                disabled={loading}
                 onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
               />
               <span>
@@ -2255,16 +2347,24 @@
               </span>
             </label>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-              <button class="btn" disabled={loading} onclick={() => handleDriveWebLogin(true)}>
+              <button class="btn" onclick={() => handleDriveWebLogin(true)}>
                 {driveStatus?.connected ? 'Cambiar Cuenta de Google (1 Clic)' : 'Conectar con Google (1 Clic)'}
               </button>
-              <button class="btn btn-green" disabled={loading} onclick={handleSyncDrive}>
-                Sincronizar con Drive Ahora
+              <button class="btn btn-green" disabled={syncingDrive} onclick={handleSyncDrive}>
+                {syncingDrive ? 'Sincronizando Drive...' : 'Sincronizar con Drive Ahora'}
+              </button>
+              <button class="btn btn-amber" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
+                {backingUpAllDBs ? 'Subiendo BDs a Drive...' : '☁️ Respaldar Todas las .db en Drive Ahora'}
               </button>
             </div>
             {#if lastSyncResult}
               <div style="margin-top: 14px; font-size: 12.5px; color: var(--accent-green);">
                 ✓ Archivo actualizado: <code>{lastSyncResult.master_workbook_path}</code>
+              </div>
+            {/if}
+            {#if lastAllDBsBackup}
+              <div style="margin-top: 10px; font-size: 12.5px; color: var(--accent-blue);">
+                ✓ {lastAllDBsBackup.message}
               </div>
             {/if}
           </div>
@@ -2343,6 +2443,17 @@
             <span>6. Diagnóstico & Actualización</span>
             <span>🛡️</span>
           </button>
+
+          <button
+            class="nav-btn {advTab === 'logs' ? 'active' : ''}"
+            onclick={() => {
+              advTab = 'logs';
+              handleLoadDebugLogs();
+            }}
+          >
+            <span>7. Logs de Debug</span>
+            <span>🐞</span>
+          </button>
         </div>
 
         <div class="card" style="margin-bottom: 0; padding: 14px;">
@@ -2358,10 +2469,10 @@
           <button
             class="btn btn-green"
             style="width: 100%; margin-top: 10px;"
-            disabled={loading}
+            disabled={syncingDrive}
             onclick={handleSyncDrive}
           >
-            Sincronizar Drive Ahora
+            {syncingDrive ? 'Sincronizando...' : 'Sincronizar Drive Ahora'}
           </button>
         </div>
       </aside>
@@ -2387,11 +2498,11 @@
             >
               {checkingUpdate ? 'Verificando GitHub...' : 'Verificar Actualización GitHub'}
             </button>
-            <button class="btn btn-outline" disabled={loading} onclick={refreshAll}>
-              {loading ? 'Actualizando...' : 'Actualizar Datos'}
+            <button class="btn btn-outline" disabled={refreshing} onclick={refreshAll}>
+              {refreshing ? 'Actualizando...' : 'Actualizar Datos'}
             </button>
-            <button class="btn" disabled={loading} onclick={handleSyncDrive}>
-              Sincronizar Drive + Backup
+            <button class="btn" disabled={syncingDrive} onclick={handleSyncDrive}>
+              {syncingDrive ? 'Sincronizando...' : 'Sincronizar Drive + Backup'}
             </button>
           </div>
         </div>
@@ -2665,7 +2776,6 @@
                 <input
                   type="checkbox"
                   checked={autoSyncLive}
-                  disabled={loading}
                   onchange={(e) => handleSavePrefs({ autoSync: (e.currentTarget as HTMLInputElement).checked })}
                 />
                 <span>Sincronizar automáticamente en vivo tras cada movimiento (Opcional)</span>
@@ -2673,14 +2783,36 @@
               <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button class="btn" onclick={() => handleDriveWebLogin(true)}>Conectar en 1 Clic</button>
                 <button class="btn btn-outline" onclick={() => handleDriveWebLogin(false)}>Configurar Credenciales / Portal</button>
-                <button class="btn btn-green" onclick={handleSyncDrive}>Sincronizar Ahora</button>
+                <button class="btn btn-green" disabled={syncingDrive} onclick={handleSyncDrive}>
+                  {syncingDrive ? 'Sincronizando...' : 'Sincronizar Ahora'}
+                </button>
               </div>
             </div>
             <div class="card">
-              <h3 class="card-title">Respaldo en Caliente AES-256-GCM (pos.db)</h3>
+              <h3 class="card-title">Respaldo Explícito de Todas las Bases (.db) a Drive y PC</h3>
+              <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
+                Toma copia consistente en caliente de <code>pos.db</code> (Aronium), <code>cuentas.db</code>, <code>aronium_utility_state.db</code> y <code>aronium-util.yaml</code>, guarda un <code>.zip</code> en PC + copia en Mis Documentos y lo sube directo a la carpeta <code>/Backups_BD</code> de Google Drive.
+              </p>
+              <button class="btn btn-amber" style="width: 100%; margin-bottom: 12px;" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
+                {backingUpAllDBs ? 'Respaldando y Subiendo .db a Drive...' : '☁️ Respaldar Todas las Bases (.db) en Drive Ahora'}
+              </button>
+              {#if lastAllDBsBackup}
+                <div style="font-size: 12px; padding: 10px; border-radius: 8px; background: var(--bg-primary); border: 1px solid var(--border); margin-bottom: 12px;">
+                  <strong>{lastAllDBsBackup.message}</strong><br />
+                  Drive conectado: <strong>{lastAllDBsBackup.drive_connected ? 'Sí (subido a la nube)' : 'No (respaldado localmente)'}</strong><br />
+                  ZIP: <code>{lastAllDBsBackup.zip_archive_path}</code>
+                  {#if lastAllDBsBackup.files?.length}
+                    <div style="margin-top: 6px;">
+                      Archivos: {lastAllDBsBackup.files.map((f) => `${f.name} (${Math.round(f.size_bytes / 1024)} KB)`).join(', ')}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <h4 style="margin: 12px 0 8px 0; font-size: 13px; color: var(--accent-blue);">Respaldo Cifrado Individual AES-256-GCM (pos.db)</h4>
               <input class="input" type="password" placeholder="Frase AES-256-GCM opcional" bind:value={backupPassphrase} />
-              <button class="btn" style="margin-top: 12px; width: 100%;" onclick={handleCreateBackup}>
-                Crear Respaldo en Caliente
+              <button class="btn btn-outline" style="margin-top: 10px; width: 100%;" onclick={handleCreateBackup}>
+                Crear Respaldo AES-256 en Caliente (pos.db)
               </button>
               {#if lastBackup}
                 <div style="margin-top: 10px; font-size: 12px;">
@@ -2976,7 +3108,6 @@
                 <input
                   type="checkbox"
                   checked={Boolean(serviceStatus?.autostart?.enabled)}
-                  disabled={loading}
                   onchange={(e) => handleToggleAutostart((e.currentTarget as HTMLInputElement).checked)}
                 />
                 <span>
@@ -2988,10 +3119,70 @@
                 También puedes marcar/desmarcar esta opción, actualizar o cerrar la app por completo haciendo clic
                 derecho sobre el ícono de <strong>Aronium Utility</strong> en la bandeja de tareas de Windows.
               </p>
-              <button class="btn btn-green" style="width: 100%;" disabled={loading} onclick={handleInstallAutoStartService}>
+              <button class="btn btn-green" style="width: 100%;" onclick={handleInstallAutoStartService}>
                 {serviceStatus?.autostart?.enabled ? 'Reparar / Re-registrar Acceso Directo Startup' : 'Activar Inicio Automático'}
               </button>
             </div>
+          </div>
+        {/if}
+
+        {#if advTab === 'logs'}
+          <div class="card" style="border-color: var(--accent-blue); margin-bottom: 16px;">
+            <div class="card-title">
+              <span>🐞 Diagnóstico de Ejecución & Logs de Debug (UI ↔ CLI Sidecar)</span>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-green" disabled={loadingLogs} onclick={handlePingCLI}>
+                  🧪 Probar Comando CLI (Doctor Ping)
+                </button>
+                <button class="btn" disabled={loadingLogs} onclick={handleLoadDebugLogs}>
+                  {loadingLogs ? 'Cargando...' : '🔄 Actualizar Logs'}
+                </button>
+                <button class="btn btn-outline" disabled={!debugLogs} onclick={handleCopyLogs}>
+                  📋 Copiar Logs
+                </button>
+                <button class="btn btn-red" disabled={loadingLogs} onclick={handleClearLogs}>
+                  🗑️ Limpiar Logs
+                </button>
+              </div>
+            </div>
+
+            {#if cliPingResult}
+              <div
+                style="padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border); background: var(--bg-primary); font-size: 12.5px; font-weight: 700;"
+              >
+                {cliPingResult}
+              </div>
+            {/if}
+
+            {#if debugLogs}
+              <div class="panel-grid" style="margin-bottom: 14px;">
+                <div style="padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-primary); font-size: 12.5px;">
+                  <div><strong>Versión UI:</strong> <code>{debugLogs.ui_version || debugLogs.cli_version || '2.0.2'}</code></div>
+                  <div><strong>Binario CLI Sidecar:</strong> <code>{debugLogs.cli_bin_path}</code></div>
+                  <div>
+                    <strong>CLI presente en disco:</strong>
+                    <span class={debugLogs.cli_bin_exists ? 'badge badge-ok' : 'badge badge-danger'}>
+                      {debugLogs.cli_bin_exists ? '✓ SÍ EXISTE' : '✗ NO ENCONTRADO / BLOQUEADO'}
+                    </span>
+                  </div>
+                </div>
+                <div style="padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-primary); font-size: 12.5px;">
+                  <div><strong>Carpeta AppData:</strong> <code>{debugLogs.app_data_dir}</code></div>
+                  <div><strong>Archivo Debug Log:</strong> <code>{debugLogs.debug_log_path}</code></div>
+                  <div><strong>Archivo Service Log:</strong> <code>{debugLogs.service_log_path}</code></div>
+                </div>
+              </div>
+
+              <h4 style="margin: 0 0 8px 0; color: var(--accent-blue); font-size: 13.5px;">Registro de Invocaciones UI ↔ CLI (<code>debug.log</code>)</h4>
+              <pre class="stmt-box" style="max-height: 290px; margin-bottom: 16px;">{debugLogs.debug_log || '(Sin registros)'}</pre>
+
+              <h4 style="margin: 0 0 8px 0; color: var(--accent-blue); font-size: 13.5px;">Registro del Servicio / Watcher (<code>service.log</code>)</h4>
+              <pre class="stmt-box" style="max-height: 220px;">{debugLogs.service_log || '(Sin registros)'}</pre>
+            {:else}
+              <p style="font-size: 13px; color: var(--text-muted);">
+                Haz clic en <strong>Actualizar Logs</strong> o <strong>Probar Comando CLI</strong> para inspeccionar el historial de ejecución en tiempo real.
+              </p>
+            {/if}
           </div>
         {/if}
       </main>

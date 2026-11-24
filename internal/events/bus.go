@@ -333,8 +333,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 	pollTicker := time.NewTicker(w.PollInterval)
 	defer pollTicker.Stop()
 
-	// Initial poll on startup
-	_, _ = w.PollOnce(ctx)
+	// On first boot (empty checkpoint), establish baseline snapshot without replaying years of historical sales
+	if prev, pErr := db.GetCheckpoint(w.StateDB); pErr == nil && prev.LastDocumentID == 0 && prev.LastPaymentID == 0 && prev.StockHash == "" {
+		if curr, cErr := db.ComputeDatabaseSnapshot(w.PosDB); cErr == nil {
+			_ = db.SaveCheckpoint(w.StateDB, curr)
+		}
+	} else {
+		_, _ = w.PollOnce(ctx)
+	}
 
 	var debounceTimer *time.Timer
 	var debounceCh <-chan time.Time

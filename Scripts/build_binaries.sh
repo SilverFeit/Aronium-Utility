@@ -8,6 +8,7 @@ export PATH="/opt/homebrew/bin:/usr/local/go/bin:${PATH}"
 BIN_DIR="${ROOT_DIR}/dist/bin"
 CLI_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/aronium-util.bin"
 UI_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/aronium-utility-ui.bin"
+UNINST_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/aronium-util-uninstall.bin"
 CERT_PAYLOAD_FILE="${ROOT_DIR}/cmd/aronium-util-setup/payload/AroniumUtility-CodeSigning.cer"
 UI_EMBED_DIST="${ROOT_DIR}/cmd/aronium-utility-ui/dist"
 
@@ -17,6 +18,7 @@ mkdir -p "${BIN_DIR}/windows-amd64" "${BIN_DIR}/windows-386" "$(dirname "${CLI_P
 cleanup_payload() {
     echo "PLACEHOLDER_PAYLOAD" > "${CLI_PAYLOAD_FILE}"
     echo "PLACEHOLDER_UI_PAYLOAD" > "${UI_PAYLOAD_FILE}"
+    echo "PLACEHOLDER_UNINSTALL_PAYLOAD" > "${UNINST_PAYLOAD_FILE}"
     echo "PLACEHOLDER_CERT" > "${CERT_PAYLOAD_FILE}"
 }
 trap cleanup_payload EXIT
@@ -82,33 +84,41 @@ sign_win_exe() {
     echo "  [signed SHA-256] ${target##${ROOT_DIR}/}"
 }
 
-echo "[2/6] Cross-compiling aronium-util.exe (CLI Engine) & aronium-utility-ui.exe (UI) for Windows x64 (amd64)..."
+echo "[2/6] Cross-compiling aronium-util.exe (CLI), aronium-utility-ui.exe (UI) & aronium-util-uninstall-x64.exe for Windows x64..."
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
     -o "${BIN_DIR}/windows-amd64/aronium-util.exe" "${ROOT_DIR}/cmd/aronium-util"
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-H=windowsgui" \
     -o "${BIN_DIR}/windows-amd64/aronium-utility-ui.exe" "${ROOT_DIR}/cmd/aronium-utility-ui"
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+    -o "${BIN_DIR}/windows-amd64/aronium-util-uninstall-x64.exe" "${ROOT_DIR}/cmd/aronium-util-uninstall"
 sign_win_exe "${BIN_DIR}/windows-amd64/aronium-util.exe" "Aronium Utility CLI"
 sign_win_exe "${BIN_DIR}/windows-amd64/aronium-utility-ui.exe" "Aronium Utility UI"
+sign_win_exe "${BIN_DIR}/windows-amd64/aronium-util-uninstall-x64.exe" "Aronium Utility Uninstaller x64"
 
 echo "[3/6] Cross-compiling self-contained Windows x64 Unified Setup Installer (aronium-util-setup-x64.exe)..."
 cp "${BIN_DIR}/windows-amd64/aronium-util.exe" "${CLI_PAYLOAD_FILE}"
 cp "${BIN_DIR}/windows-amd64/aronium-utility-ui.exe" "${UI_PAYLOAD_FILE}"
+cp "${BIN_DIR}/windows-amd64/aronium-util-uninstall-x64.exe" "${UNINST_PAYLOAD_FILE}"
 [[ -f "${CERT_CER}" ]] && cp "${CERT_CER}" "${CERT_PAYLOAD_FILE}"
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
     -o "${BIN_DIR}/windows-amd64/aronium-util-setup-x64.exe" "${ROOT_DIR}/cmd/aronium-util-setup"
 sign_win_exe "${BIN_DIR}/windows-amd64/aronium-util-setup-x64.exe" "Aronium Utility Unified Installer x64"
 
-echo "[4/6] Cross-compiling aronium-util.exe (CLI Engine) & aronium-utility-ui.exe (UI) for Windows x86 32-bit (386)..."
+echo "[4/6] Cross-compiling aronium-util.exe, aronium-utility-ui.exe & aronium-util-uninstall-x86.exe for Windows x86..."
 CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -trimpath \
     -o "${BIN_DIR}/windows-386/aronium-util.exe" "${ROOT_DIR}/cmd/aronium-util"
 CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -trimpath -ldflags="-H=windowsgui" \
     -o "${BIN_DIR}/windows-386/aronium-utility-ui.exe" "${ROOT_DIR}/cmd/aronium-utility-ui"
+CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -trimpath \
+    -o "${BIN_DIR}/windows-386/aronium-util-uninstall-x86.exe" "${ROOT_DIR}/cmd/aronium-util-uninstall"
 sign_win_exe "${BIN_DIR}/windows-386/aronium-util.exe" "Aronium Utility CLI (32-bit)"
 sign_win_exe "${BIN_DIR}/windows-386/aronium-utility-ui.exe" "Aronium Utility UI (32-bit)"
+sign_win_exe "${BIN_DIR}/windows-386/aronium-util-uninstall-x86.exe" "Aronium Utility Uninstaller x86"
 
 echo "[5/6] Cross-compiling self-contained Windows x86 Unified Setup Installer (aronium-util-setup-x86.exe)..."
 cp "${BIN_DIR}/windows-386/aronium-util.exe" "${CLI_PAYLOAD_FILE}"
 cp "${BIN_DIR}/windows-386/aronium-utility-ui.exe" "${UI_PAYLOAD_FILE}"
+cp "${BIN_DIR}/windows-386/aronium-util-uninstall-x86.exe" "${UNINST_PAYLOAD_FILE}"
 CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -trimpath \
     -o "${BIN_DIR}/windows-386/aronium-util-setup-x86.exe" "${ROOT_DIR}/cmd/aronium-util-setup"
 sign_win_exe "${BIN_DIR}/windows-386/aronium-util-setup-x86.exe" "Aronium Utility Unified Installer x86"

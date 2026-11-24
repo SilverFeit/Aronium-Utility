@@ -35,10 +35,11 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "2.0.1"
+const Version = "2.0.2"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		config.AppendDebugLog("CLI", strings.Join(os.Args[1:], " "), "ERROR", 0, err.Error())
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -102,6 +103,10 @@ func run(args []string) error {
 		return runAdmin(subArgs)
 	case "update", "upgrade":
 		return runUpdate(subArgs)
+	case "logs", "debug-logs":
+		return runLogs(subArgs)
+	case "uninstall":
+		return runUninstallCmd(subArgs)
 	case "demo-db", "test-fixture":
 		return runDemoDB(subArgs)
 	default:
@@ -136,6 +141,8 @@ COMANDOS PRINCIPALES:
   fiscal      Conector de Facturación Electrónica Modular UBL 2.1 (emit, list, credit-note)
   admin       Consola administrativa (TUI en terminal, --json para UI y servidor local en localhost:8080)
   update      Verifica e instala actualizaciones directamente desde GitHub Releases (check, apply)
+  logs        Muestra o limpia los logs de diagnóstico y servicio (debug.log / service.log)
+  uninstall   Desinstala al 100%% Aronium Utility respaldando cuentas.db en Mis Documentos
   demo-db     Genera una base pos.db sintética realista para pruebas inmediatas
 
 EJEMPLOS RÁPIDOS:
@@ -1177,13 +1184,62 @@ func runBackup(args []string) error {
 	fileArg := fs.String("file", "", "Ruta del archivo de respaldo para verify o restore")
 	keep := fs.Int("keep", 7, "Cantidad de respaldos a conservar en rotación")
 	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
-	cfg, _, err := loadConfigWithFlags(fs, args)
+	cfg, cfgPath, err := loadConfigWithFlags(fs, args)
 	if err != nil {
 		return err
 	}
 
 	mgr := backup.NewManager(cfg)
 	switch sub {
+	case "all-dbs", "all", "drive-all":
+		res, err := mgr.CreateAllDatabasesSnapshot(context.Background(), cfgPath)
+		if err != nil {
+			return err
+		}
+		if stateConn, stErr := db.OpenStateDB(cfg.StateDBPath); stErr == nil {
+			driveMgr := sync.NewDriveManager(cfg, nil, stateConn)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if tok, tErr := driveMgr.EnsureValidToken(ctx); tErr == nil && tok != nil {
+				res.DriveConnected = true
+				for _, f := range res.Files {
+					data, rErr := os.ReadFile(f.LocalPath)
+					if rErr != nil {
+						continue
+					}
+					if fID, uErr := driveMgr.UploadFileToDrive(ctx, tok.AccessToken, f.Name, f.LogicalPath, f.MimeType, data); uErr != nil {
+						res.UploadWarnings = append(res.UploadWarnings, fmt.Sprintf("Drive %s: %v", f.Name, uErr))
+					} else {
+						res.UploadedDriveIDs[f.LogicalPath] = fID
+					}
+				}
+				if zipRaw, zErr := os.ReadFile(res.ZipArchivePath); zErr == nil {
+					if fID, uErr := driveMgr.UploadFileToDrive(ctx, tok.AccessToken, filepath.Base(res.ZipArchivePath), res.ZipLogicalPath, "application/zip", zipRaw); uErr != nil {
+						res.UploadWarnings = append(res.UploadWarnings, fmt.Sprintf("Drive ZIP: %v", uErr))
+					} else {
+						res.UploadedDriveIDs[res.ZipLogicalPath] = fID
+					}
+				}
+				if len(res.UploadedDriveIDs) > 0 {
+					res.Message = fmt.Sprintf("¡Respaldo completo! %d archivo(s) .db/.zip respaldados en PC y subidos directamente a Google Drive (/Backups_BD).", len(res.UploadedDriveIDs))
+				}
+			}
+			cancel()
+			_ = stateConn.Close()
+		}
+		config.AppendDebugLog("BACKUP-ALL-DBS", "backup all-dbs", "OK", 0, res.Message)
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		fmt.Printf("[✓] %s\n", res.Message)
+		fmt.Printf("    • Paquete ZIP: %s\n", res.ZipArchivePath)
+		fmt.Printf("    • Carpeta Sync: %s\n", res.BackupFolder)
+		if res.DocumentsAccountsCopy != "" {
+			fmt.Printf("    • Mis Documentos: %s\n", res.DocumentsAccountsCopy)
+		}
+		return nil
+
 	case "create":
 		manifest, err := mgr.Create(context.Background(), *passphrase)
 		if err != nil {
@@ -1249,7 +1305,7 @@ func runBackup(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("subcomando de backup desconocido '%s' (usa: create, verify, restore, prune)", sub)
+		return fmt.Errorf("subcomando de backup desconocido '%s' (usa: create, all-dbs, verify, restore, prune)", sub)
 	}
 }
 
@@ -2633,6 +2689,70 @@ func runUpdate(args []string) error {
 	default:
 		return fmt.Errorf("subcomando de update desconocido '%s' (usa: check, apply)", sub)
 	}
+}
+
+// 21. logs (Inspect or clear UI/CLI debug.log and service.log)
+func runLogs(args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	clear := fs.Bool("clear", false, "Limpiar el archivo debug.log")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+	_, _, err := loadConfigWithFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if *clear {
+		if err := config.ClearDebugLogs(); err != nil {
+			return err
+		}
+	}
+	dbgText, _ := config.ReadDebugLogs(65536)
+	svcText, _ := config.ReadServiceLogs(32768)
+	exePath, _ := os.Executable()
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"cli_version":      Version,
+			"cli_bin_path":     exePath,
+			"cli_bin_exists":   true,
+			"app_data_dir":     config.DefaultAppDataDir(),
+			"debug_log_path":   config.DebugLogPath(),
+			"service_log_path": config.ServiceLogPath(),
+			"debug_log":        dbgText,
+			"service_log":      svcText,
+		})
+	}
+	fmt.Printf("=== %s ===\n%s\n", config.DebugLogPath(), dbgText)
+	return nil
+}
+
+// 22. uninstall (100% clean uninstall with Mis Documentos backup of cuentas.db)
+func runUninstallCmd(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	installDir := fs.String("install-dir", "", "Carpeta de instalación")
+	dataDir := fs.String("data-dir", "", "Carpeta de datos")
+	jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+	cfg, _, err := loadConfigWithFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if *dataDir == "" {
+		*dataDir = config.DefaultAppDataDir()
+	}
+	if *installDir == "" {
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			*installDir = filepath.Join(localAppData, "Programs", "AroniumUtility")
+		} else if exe, e := os.Executable(); e == nil {
+			*installDir = filepath.Dir(exe)
+		}
+	}
+	rep, err := service.RunCompleteUninstall(*installDir, *dataDir, cfg.AccountsDBPath)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	fmt.Printf("[✓] Desinstalación 100%% completa. Respaldo cuentas.db en: %s\n", rep.AccountsBackupPath)
+	return nil
 }
 
 
