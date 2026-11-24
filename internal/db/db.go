@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1372,4 +1374,197 @@ func RunDoctor(ctx context.Context, posDBPath, stateDBPath, registerID, tokenVau
 	}
 
 	return rep, nil
+}
+
+var posCopyMu sync.Mutex
+
+// PosCopyResult describes an isolated byte-level copy of Aronium's pos.db into LocalAppData.
+type PosCopyResult struct {
+	SourcePath     string `json:"source_path"`
+	LocalCopyPath  string `json:"local_copy_path"`
+	CopiedAt       string `json:"copied_at"`
+	SizeBytes      int64  `json:"size_bytes"`
+	WALMerged      bool   `json:"wal_merged"`
+	ReusedExisting bool   `json:"reused_existing"`
+}
+
+func defaultAppDataDirForDB() string {
+	if custom := strings.TrimSpace(os.Getenv("ARONIUM_UTIL_HOME")); custom != "" {
+		return custom
+	}
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		return filepath.Join(localAppData, "AroniumUtility")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".aronium-utility"
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Local", "AroniumUtility")
+	}
+	return filepath.Join(home, ".aronium-utility")
+}
+
+// LocalPosDBCopyPath returns the isolated local working copy path (%LOCALAPPDATA%\AroniumUtility\pos_local_copy.db).
+func LocalPosDBCopyPath() string {
+	return filepath.Join(defaultAppDataDirForDB(), "pos_local_copy.db")
+}
+
+func copyOSFileBytes(src, dst string) (int64, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return 0, err
+	}
+	n, cpErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if cpErr != nil {
+		return n, cpErr
+	}
+	if closeErr != nil {
+		return n, closeErr
+	}
+	return n, nil
+}
+
+// EnsureWorkingPosDBCopy returns the isolated local working copy path without touching Aronium's live pos.db
+// if pos_local_copy.db already exists. If it does not exist yet, it performs one OS byte copy first.
+func EnsureWorkingPosDBCopy(sourcePosDBPath, destCopyPath string) (string, error) {
+	dest := strings.TrimSpace(destCopyPath)
+	if dest == "" {
+		dest = LocalPosDBCopyPath()
+	}
+	if info, err := os.Stat(dest); err == nil && !info.IsDir() && info.Size() > 0 {
+		return dest, nil
+	}
+	res, err := SyncPosDBToLocalCopy(sourcePosDBPath, dest, true)
+	if err != nil {
+		return dest, err
+	}
+	return res.LocalCopyPath, nil
+}
+
+// SyncPosDBToLocalCopy copies Aronium's pos.db to an isolated local working file using pure OS shared reads
+// (zero SQLite lock on Aronium Lite). If a non-empty -wal exists alongside source, it is merged only inside our
+// isolated temporary copy before atomically replacing pos_local_copy.db.
+func SyncPosDBToLocalCopy(sourcePosDBPath, destCopyPath string, force bool) (*PosCopyResult, error) {
+	posCopyMu.Lock()
+	defer posCopyMu.Unlock()
+
+	src := strings.TrimSpace(sourcePosDBPath)
+	dest := strings.TrimSpace(destCopyPath)
+	if dest == "" {
+		dest = LocalPosDBCopyPath()
+	}
+
+	if src == "" || strings.EqualFold(filepath.Clean(src), filepath.Clean(dest)) {
+		info, err := os.Stat(dest)
+		if err != nil {
+			return nil, fmt.Errorf("copia local pos_local_copy.db no disponible en %s: %w", dest, err)
+		}
+		return &PosCopyResult{
+			SourcePath:     src,
+			LocalCopyPath:  dest,
+			CopiedAt:       time.Now().Format("2006-01-02 15:04:05"),
+			SizeBytes:      info.Size(),
+			ReusedExisting: true,
+		}, nil
+	}
+
+	srcInfo, err := os.Stat(src)
+	if err != nil || srcInfo.IsDir() || srcInfo.Size() == 0 {
+		if destInfo, dErr := os.Stat(dest); dErr == nil && !destInfo.IsDir() && destInfo.Size() > 0 {
+			return &PosCopyResult{
+				SourcePath:     src,
+				LocalCopyPath:  dest,
+				CopiedAt:       time.Now().Format("2006-01-02 15:04:05"),
+				SizeBytes:      destInfo.Size(),
+				ReusedExisting: true,
+			}, nil
+		}
+		return nil, fmt.Errorf("no se pudo acceder a pos.db de Aronium (%s): %w", src, err)
+	}
+
+	if !force {
+		if destInfo, dErr := os.Stat(dest); dErr == nil && !destInfo.IsDir() && destInfo.Size() > 0 {
+			return &PosCopyResult{
+				SourcePath:     src,
+				LocalCopyPath:  dest,
+				CopiedAt:       time.Now().Format("2006-01-02 15:04:05"),
+				SizeBytes:      destInfo.Size(),
+				ReusedExisting: true,
+			}, nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return nil, err
+	}
+
+	tmpCopy := fmt.Sprintf("%s.%d.copy.tmp", dest, time.Now().UnixNano())
+	defer func() {
+		_ = os.Remove(tmpCopy)
+		_ = os.Remove(tmpCopy + "-wal")
+		_ = os.Remove(tmpCopy + "-shm")
+		_ = os.Remove(tmpCopy + "-journal")
+	}()
+
+	sizeBytes, err := copyOSFileBytes(src, tmpCopy)
+	if err != nil {
+		return nil, fmt.Errorf("error copiando %s a copia local aislada: %w", src, err)
+	}
+
+	walMerged := false
+	srcWAL := src + "-wal"
+	if walInfo, wErr := os.Stat(srcWAL); wErr == nil && walInfo.Size() > 0 {
+		if _, cpWalErr := copyOSFileBytes(srcWAL, tmpCopy+"-wal"); cpWalErr == nil {
+			if shmInfo, sErr := os.Stat(src + "-shm"); sErr == nil && shmInfo.Size() > 0 {
+				_, _ = copyOSFileBytes(src+"-shm", tmpCopy+"-shm")
+			}
+			// Consolidate WAL pages strictly inside our own isolated tmpCopy (never touching Aronium's files)
+			if key := os.Getenv("ARONIUM_POS_DB_PASSWORD"); true {
+				uri := toSQLiteFileURIWithKey(tmpCopy, false, key)
+				if conn, oErr := sql.Open("sqlite", uri); oErr == nil {
+					_, _ = conn.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+					_, _ = conn.Exec(`PRAGMA journal_mode=DELETE;`)
+					_ = conn.Close()
+					walMerged = true
+				}
+			}
+			_ = os.Remove(tmpCopy + "-wal")
+			_ = os.Remove(tmpCopy + "-shm")
+			if st, sErr := os.Stat(tmpCopy); sErr == nil {
+				sizeBytes = st.Size()
+			}
+		}
+	}
+
+	// Clean any stale sidecar files on destination before atomic replace
+	_ = os.Remove(dest + "-wal")
+	_ = os.Remove(dest + "-shm")
+	_ = os.Remove(dest + "-journal")
+
+	if err := os.Rename(tmpCopy, dest); err != nil {
+		// Windows fallback if a reader handle is closing on dest
+		if raw, rErr := os.ReadFile(tmpCopy); rErr == nil {
+			if wErr := os.WriteFile(dest, raw, 0644); wErr != nil {
+				return nil, fmt.Errorf("no se pudo escribir %s: %w", dest, wErr)
+			}
+		} else {
+			return nil, fmt.Errorf("no se pudo renombrar %s -> %s: %w", tmpCopy, dest, err)
+		}
+	}
+
+	return &PosCopyResult{
+		SourcePath:    src,
+		LocalCopyPath: dest,
+		CopiedAt:      time.Now().Format("2006-01-02 15:04:05"),
+		SizeBytes:     sizeBytes,
+		WALMerged:     walMerged,
+	}, nil
 }

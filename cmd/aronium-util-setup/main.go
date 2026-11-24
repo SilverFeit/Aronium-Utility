@@ -15,6 +15,7 @@ import (
 
 	"github.com/SilverFeit/Aronium-Utility/internal/accounts"
 	"github.com/SilverFeit/Aronium-Utility/internal/config"
+	"github.com/SilverFeit/Aronium-Utility/internal/db"
 	"github.com/SilverFeit/Aronium-Utility/internal/service"
 )
 
@@ -33,7 +34,7 @@ var embeddedAppIcon []byte
 //go:embed payload/AroniumUtility-CodeSigning.cer
 var embeddedCodeSigningCert []byte
 
-const InstallerVersion = "2.0.2"
+const InstallerVersion = "2.0.3"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación de los ejecutables (por defecto %LOCALAPPDATA%\\Programs\\AroniumUtility)")
@@ -269,25 +270,33 @@ func runInstall(installDir, dataDir, posDB, storeID, registerID string, installS
 		}
 	}
 
+	localPosCopyPath := filepath.Join(dataDir, "pos_local_copy.db")
 	envVars := map[string]string{
-		"ARONIUM_UTIL_HOME":   dataDir,
-		"ARONIUM_UTIL_CONFIG": cfgPath,
-		"ARONIUM_POS_DB":      cfg.PosDBPath,
-		"ARONIUM_STATE_DB":    cfg.StateDBPath,
-		"ARONIUM_ACCOUNTS_DB": cfg.AccountsDBPath,
-		"ARONIUM_STORE_ID":    cfg.StoreID,
-		"ARONIUM_REGISTER_ID": cfg.CashRegisterID,
-		"ARONIUM_CLI_BIN":     destCLIBin,
-		"ARONIUM_UI_BIN":      destUIBin,
+		"ARONIUM_UTIL_HOME":      dataDir,
+		"ARONIUM_UTIL_CONFIG":    cfgPath,
+		"ARONIUM_POS_DB":         cfg.PosDBPath,
+		"ARONIUM_LOCAL_POS_COPY": localPosCopyPath,
+		"ARONIUM_STATE_DB":       cfg.StateDBPath,
+		"ARONIUM_ACCOUNTS_DB":    cfg.AccountsDBPath,
+		"ARONIUM_STORE_ID":       cfg.StoreID,
+		"ARONIUM_REGISTER_ID":    cfg.CashRegisterID,
+		"ARONIUM_CLI_BIN":        destCLIBin,
+		"ARONIUM_UI_BIN":         destUIBin,
 	}
+	cfg.LocalPosCopyPath = localPosCopyPath
 
 	fmt.Printf("[3/6] Configurando variables de entorno, PATH (Usuario + Sistema) y shims globales en Windows...\n")
 	if err := configureEnvironmentVariables(installDir, dataDir, destCLIBin, destUIBin, destUninstBin, cliPayload, envVars); err != nil {
 		return err
 	}
 
-	// 4. Write updated configuration aronium-util.yaml & run automatic lossless schema migration on cuentas.db
-	fmt.Printf("[4/6] Verificando configuración (%s) y migrando base de cuentas (%s)...\n", cfgPath, cfg.AccountsDBPath)
+	// 4. Write updated configuration aronium-util.yaml, create isolated pos_local_copy.db, & migrate cuentas.db
+	fmt.Printf("[4/6] Creando copia aislada de Aronium (%s) y migrando base de cuentas (%s)...\n", localPosCopyPath, cfg.AccountsDBPath)
+	if cpRes, cpErr := db.SyncPosDBToLocalCopy(cfg.PosDBPath, localPosCopyPath, true); cpErr != nil {
+		fmt.Printf("[i] Aún no se encontró %s (%v); podrás conectarlo luego sin tocar Aronium.\n", cfg.PosDBPath, cpErr)
+	} else {
+		fmt.Printf("[OK] Copia local aislada generada (%s, %d bytes) — Aronium Lite nunca será bloqueado.\n", cpRes.LocalCopyPath, cpRes.SizeBytes)
+	}
 	if err := cfg.Save(cfgPath); err != nil {
 		return fmt.Errorf("error guardando aronium-util.yaml: %w", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -35,7 +36,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const Version = "2.0.2"
+const Version = "2.0.3"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -186,6 +187,32 @@ func loadConfigWithFlags(fs *flag.FlagSet, args []string) (*config.Config, strin
 		resolvedPath = config.DefaultConfigPath()
 	}
 	return cfg, resolvedPath, nil
+}
+
+// workingPosDBPath returns the isolated local copy path (%LOCALAPPDATA%\AroniumUtility\pos_local_copy.db)
+// so Aronium Lite's live pos.db is NEVER opened by SQLite during runtime operations.
+func workingPosDBPath(cfg *config.Config, forceCopyRefresh bool) string {
+	copyDest := strings.TrimSpace(cfg.LocalPosCopyPath)
+	if copyDest == "" {
+		copyDest = db.LocalPosDBCopyPath()
+		cfg.LocalPosCopyPath = copyDest
+	}
+	if forceCopyRefresh {
+		if res, err := db.SyncPosDBToLocalCopy(cfg.PosDBPath, copyDest, true); err == nil && res != nil {
+			return res.LocalCopyPath
+		}
+	} else {
+		if work, err := db.EnsureWorkingPosDBCopy(cfg.PosDBPath, copyDest); err == nil && work != "" {
+			return work
+		}
+	}
+	return copyDest
+}
+
+// openWorkingPosDB opens ONLY the isolated local copy pos_local_copy.db in read-only mode.
+func openWorkingPosDB(cfg *config.Config, forceCopyRefresh bool) (*sql.DB, error) {
+	workPath := workingPosDBPath(cfg, forceCopyRefresh)
+	return db.OpenPosDBReadOnly(workPath)
 }
 
 // 0. ui (Launches Aronium Utility UI executable - Tauri 2 + Svelte + TypeScript)
@@ -348,10 +375,17 @@ func runDoctor(args []string) error {
 		return err
 	}
 
-	rep, err := db.RunDoctor(context.Background(), cfg.PosDBPath, cfg.StateDBPath, cfg.CashRegisterID, cfg.GoogleDrive.TokenVaultPath)
+	workPosPath := workingPosDBPath(cfg, false)
+	rep, err := db.RunDoctor(context.Background(), workPosPath, cfg.StateDBPath, cfg.CashRegisterID, cfg.GoogleDrive.TokenVaultPath)
 	if err != nil {
 		return err
 	}
+	if rep.Details == nil {
+		rep.Details = make(map[string]string)
+	}
+	rep.Details["origin_pos_db_path"] = cfg.PosDBPath
+	rep.Details["local_pos_copy_path"] = workPosPath
+	rep.Details["isolation_mode"] = "isolated_local_copy"
 	rep.AccountsDBPath = cfg.AccountsDBPath
 	if accMgr, err := accounts.NewManager(cfg.AccountsDBPath); err == nil {
 		rep.AccountsDBReady = true
@@ -524,7 +558,7 @@ func runSync(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -573,7 +607,7 @@ func runWatch(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -765,7 +799,7 @@ func runCredit(args []string) error {
 		if err != nil {
 			return err
 		}
-		posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+		posConn, err := openWorkingPosDB(cfg, false)
 		if err != nil {
 			return err
 		}
@@ -894,7 +928,7 @@ func runCredit(args []string) error {
 			return fmt.Errorf("uso: aronium-util credit statement \"<nombre_o_id_cliente>\"")
 		}
 		customerQuery := strings.Join(rem, " ")
-		posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+		posConn, err := openWorkingPosDB(cfg, false)
 		if err != nil {
 			return err
 		}
@@ -948,7 +982,7 @@ func runInventory(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1063,7 +1097,7 @@ func runRegisters(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1325,7 +1359,7 @@ func runMigrate(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1385,7 +1419,7 @@ func runReports(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1432,7 +1466,7 @@ func runFiscal(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1526,7 +1560,7 @@ func runAdmin(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -1977,6 +2011,102 @@ func runAccounts(args []string) error {
 		fmt.Printf("[✓] Cuenta totalmente pagada eliminada: [%s] %s (Saldo: $0)\n", deletedAcc.ID, deletedAcc.Name)
 		return nil
 
+	case "close-day", "cierre", "close-box":
+		fs := flag.NewFlagSet("accounts close-day", flag.ContinueOnError)
+		dateArg := fs.String("date", "", "Fecha del cierre YYYY-MM-DD (por defecto hoy en hora local)")
+		noteArg := fs.String("note", "", "Nota o referencia del cierre de caja de cuentas")
+		syncDriveArg := fs.Bool("sync-drive", false, "Sincronizar con Google Drive y respaldar las 2 .db en la nube (opcional)")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+
+		// Refresh isolated pos_local_copy.db via pure byte copy first so both .db restore points are current
+		workPosPath := workingPosDBPath(cfg, true)
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+
+		rootFolder := cfg.GoogleDrive.RootFolderName
+		if strings.TrimSpace(rootFolder) == "" {
+			rootFolder = "AroniumUtility"
+		}
+		reportsDir := filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, rootFolder, "Reportes")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		rec, err := mgr.CloseDailyAccountsBox(ctx, accounts.DailyCloseRequest{
+			Date:             *dateArg,
+			Note:             *noteArg,
+			StoreName:        cfg.StoreName,
+			PosLocalCopyPath: workPosPath,
+			BackupDir:        cfg.Backup.BackupDir,
+			ReportsDir:       reportsDir,
+			DocumentsDir:     service.DocumentsBackupDir(),
+			SyncDrive:        *syncDriveArg,
+		})
+		if err != nil {
+			return err
+		}
+
+		if *syncDriveArg && cfg.GoogleDrive.Enabled {
+			syncRes := syncAccountsBestEffort(cfg)
+			if syncRes != nil && len(syncRes.UploadedDriveIDs) > 0 {
+				_ = mgr.MarkClosureDriveSynced(rec.ID)
+				rec.SyncedToDrive = true
+				rec.DriveUploadedCount = len(syncRes.UploadedDriveIDs)
+				rec.DriveMessage = fmt.Sprintf("Sincronizado con Google Drive (%d archivos subidos + backup 2 .db).", len(syncRes.UploadedDriveIDs))
+			} else if syncRes != nil && syncRes.QueuedOffline {
+				rec.DriveMessage = "Sin conexión o sin sesión de Google Drive: cierre y respaldo de 2 .db guardados en local."
+			} else {
+				rec.DriveMessage = "Respaldo de cierre y 2 .db guardado localmente en la carpeta sincronizada."
+			}
+		} else {
+			rec.DriveMessage = "Cierre diario y respaldo de 2 .db realizados 100% en local."
+		}
+
+		config.AppendDebugLog("ACCOUNTS-CLOSE-DAY", "accounts close-day", "OK", 0,
+			fmt.Sprintf("date=%s abonos=$%d cartera=$%d syncDrive=%v", rec.Date, rec.TotalPaymentsDay, rec.TotalPortfolioSaldo, rec.SyncedToDrive))
+
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(rec)
+		}
+		fmt.Print(rec.ReceiptText)
+		fmt.Printf("[✓] %s\n", rec.DriveMessage)
+		return nil
+
+	case "closures", "cierres":
+		fs := flag.NewFlagSet("accounts closures", flag.ContinueOnError)
+		limit := fs.Int("limit", 20, "Cantidad de cierres a mostrar")
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, _, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+		if err != nil {
+			return err
+		}
+		defer mgr.Close()
+		list, err := mgr.ListDailyClosures(*limit)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(list)
+		}
+		for _, c := range list {
+			fmt.Printf("• #%d [%s] Abonos: $%d | Cargos: $%d | Cartera: $%d | Drive: %v\n",
+				c.ID, c.ClosedAt, c.TotalPaymentsDay, c.TotalChargesDay, c.TotalPortfolioSaldo, c.SyncedToDrive)
+		}
+		return nil
+
 	case "reset", "recreate", "truncate":
 		fs := flag.NewFlagSet("accounts reset", flag.ContinueOnError)
 		pin := fs.String("pin", "", "PIN de 5 dígitos requerido si Modo Avanzado está protegido")
@@ -2008,7 +2138,7 @@ func runAccounts(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, delete, reset, migrate, status, statement)", sub)
+		return fmt.Errorf("subcomando de accounts desconocido '%s' (usa: list, create, charge, pay, by-id, delete, close-day, closures, reset, migrate, status, statement)", sub)
 	}
 }
 
@@ -2018,7 +2148,7 @@ func syncAccountsBestEffort(cfg *config.Config) *sync.SyncResult {
 	if stateConn != nil {
 		defer stateConn.Close()
 	}
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err == nil && posConn != nil {
 		defer posConn.Close()
 		driveMgr := sync.NewDriveManager(cfg, posConn, stateConn)
@@ -2080,13 +2210,13 @@ func runCatalog(args []string) error {
 		return err
 	}
 
-	posConn, err := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	posConn, err := openWorkingPosDB(cfg, false)
 	if err != nil {
 		return err
 	}
 	defer posConn.Close()
 
-	match, err := db.SearchCatalogForScanner(posConn, cfg.PosDBPath, *query, *barcode, *limit)
+	match, err := db.SearchCatalogForScanner(posConn, workingPosDBPath(cfg, false), *query, *barcode, *limit)
 	if err != nil {
 		return err
 	}
@@ -2161,6 +2291,11 @@ func runConfigCmd(args []string) error {
 			return err
 		}
 		_, posErr := os.Stat(cfg.PosDBPath)
+		workCopyPath := cfg.LocalPosCopyPath
+		if strings.TrimSpace(workCopyPath) == "" {
+			workCopyPath = db.LocalPosDBCopyPath()
+		}
+		_, copyErr := os.Stat(workCopyPath)
 		_, accErr := os.Stat(cfg.AccountsDBPath)
 		defaultPos := config.DetectAroniumPosDB()
 		_, defPosErr := os.Stat(defaultPos)
@@ -2171,6 +2306,8 @@ func runConfigCmd(args []string) error {
 			"default_pos_db_path":   defaultPos,
 			"default_pos_db_exists": defPosErr == nil,
 			"pos_db_exists":         posErr == nil,
+			"local_pos_copy_path":   workCopyPath,
+			"local_pos_copy_exists": copyErr == nil,
 			"accounts_db_exists":    accErr == nil,
 			"effective_timezone":    accounts.LocalLocation().String(),
 			"current_local_time":    accounts.LocalTimestampNow(),
@@ -2245,10 +2382,17 @@ func runConfigCmd(args []string) error {
 			return err
 		}
 
-		rep, _ := db.RunDoctor(context.Background(), cfg.PosDBPath, cfg.StateDBPath, cfg.CashRegisterID, cfg.GoogleDrive.TokenVaultPath)
+		// Sync Aronium pos.db -> isolated pos_local_copy.db immediately via OS file copy
+		workPosPath := workingPosDBPath(cfg, true)
+		rep, _ := db.RunDoctor(context.Background(), workPosPath, cfg.StateDBPath, cfg.CashRegisterID, cfg.GoogleDrive.TokenVaultPath)
 		if rep != nil {
 			rep.AccountsDBPath = cfg.AccountsDBPath
 			rep.AccountsDBReady = true
+			if rep.Details == nil {
+				rep.Details = make(map[string]string)
+			}
+			rep.Details["origin_pos_db_path"] = cfg.PosDBPath
+			rep.Details["local_pos_copy_path"] = workPosPath
 		}
 
 		if *jsonOut {
@@ -2259,6 +2403,45 @@ func runConfigCmd(args []string) error {
 			})
 		}
 		fmt.Printf("[✓] Rutas guardadas en %s (pos.db=%s, cuentas.db=%s)\n", cfgPath, cfg.PosDBPath, cfg.AccountsDBPath)
+		return nil
+
+	case "sync-pos-copy", "refresh-pos-copy":
+		fs := flag.NewFlagSet("config sync-pos-copy", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "Salida en formato JSON")
+		cfg, cfgPath, err := loadConfigWithFlags(fs, args)
+		if err != nil {
+			return err
+		}
+		if _, stErr := os.Stat(cfg.PosDBPath); stErr != nil {
+			detected := config.DetectAroniumPosDB()
+			if _, dErr := os.Stat(detected); dErr == nil {
+				cfg.PosDBPath = detected
+				_ = cfg.Save(cfgPath)
+			}
+		}
+		res, err := db.SyncPosDBToLocalCopy(cfg.PosDBPath, cfg.LocalPosCopyPath, true)
+		if err != nil {
+			return err
+		}
+		prodCount := 0
+		if posConn, oErr := db.OpenPosDBReadOnly(res.LocalCopyPath); oErr == nil {
+			if prods, pErr := db.ListProductsWithStock(posConn); pErr == nil {
+				prodCount = len(prods)
+			}
+			_ = posConn.Close()
+		}
+		if *jsonOut {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"synced":        true,
+				"source_path":   res.SourcePath,
+				"local_copy":    res.LocalCopyPath,
+				"copied_at":     res.CopiedAt,
+				"size_bytes":    res.SizeBytes,
+				"wal_merged":    res.WALMerged,
+				"product_count": prodCount,
+			})
+		}
+		fmt.Printf("[✓] Copia local aislada actualizada (%s, %d bytes, %d productos).\n", res.LocalCopyPath, res.SizeBytes, prodCount)
 		return nil
 
 	case "pick-db":
@@ -2465,7 +2648,7 @@ func runRepair(args []string) error {
 		})
 	}
 
-	// 2. Direct pos.db validation & product loading check
+	// 2. Refresh isolated pos_local_copy.db and validate product loading from the copy (never locking Aronium)
 	if _, stErr := os.Stat(cfg.PosDBPath); stErr != nil {
 		detected := config.DetectAroniumPosDB()
 		if _, dErr := os.Stat(detected); dErr == nil {
@@ -2474,13 +2657,14 @@ func runRepair(args []string) error {
 		}
 	}
 	prodCount := 0
-	posConn, posErr := db.OpenPosDBReadOnly(cfg.PosDBPath)
+	workPosPath := workingPosDBPath(cfg, true)
+	posConn, posErr := db.OpenPosDBReadOnly(workPosPath)
 	if posErr != nil {
 		allOK = false
 		steps = append(steps, repairStep{
-			Component: "pos.db (Inventario Aronium)",
+			Component: "Copia Local pos.db",
 			OK:        false,
-			Message:   fmt.Sprintf("No se pudo abrir pos.db (%s): %v", cfg.PosDBPath, posErr),
+			Message:   fmt.Sprintf("No se pudo abrir copia local (%s) ni origen (%s): %v", workPosPath, cfg.PosDBPath, posErr),
 		})
 	} else {
 		prods, pErr := db.ListProductsWithStock(posConn)
@@ -2488,16 +2672,16 @@ func runRepair(args []string) error {
 		if pErr != nil {
 			allOK = false
 			steps = append(steps, repairStep{
-				Component: "pos.db (Inventario Aronium)",
+				Component: "Copia Local pos.db",
 				OK:        false,
-				Message:   fmt.Sprintf("Conectado a %s pero falló lectura de productos: %v", cfg.PosDBPath, pErr),
+				Message:   fmt.Sprintf("Copia %s creada pero falló lectura de productos: %v", workPosPath, pErr),
 			})
 		} else {
 			prodCount = len(prods)
 			steps = append(steps, repairStep{
-				Component: "pos.db (Inventario Aronium)",
+				Component: "Copia Local pos.db",
 				OK:        true,
-				Message:   fmt.Sprintf("Conectado correctamente (%d productos cargados desde %s)", prodCount, cfg.PosDBPath),
+				Message:   fmt.Sprintf("Copia aislada operativa (%d productos cargados desde %s; Aronium 100%% libre)", prodCount, workPosPath),
 			})
 		}
 	}

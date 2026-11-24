@@ -221,6 +221,7 @@ export interface ConfigInfoResponse {
     store_name: string;
     cash_register_id: string;
     pos_db_path: string;
+    local_pos_copy_path?: string;
     accounts_db_path: string;
     state_db_path: string;
     timezone?: string;
@@ -238,6 +239,8 @@ export interface ConfigInfoResponse {
   default_pos_db_path: string;
   default_pos_db_exists: boolean;
   pos_db_exists: boolean;
+  local_pos_copy_path?: string;
+  local_pos_copy_exists?: boolean;
   accounts_db_exists: boolean;
   effective_timezone?: string;
   current_local_time?: string;
@@ -276,12 +279,38 @@ export interface SyncResult {
   timestamp: string;
   master_workbook_path: string;
   accounts_backup_path?: string;
+  pos_restore_point_path?: string;
+  two_db_restore_points?: string[];
   customer_files: string[];
   inventory_files: string[];
   uploaded_drive_ids?: Record<string, string>;
   updated_sheet_id?: string;
   queued_offline: boolean;
   flushed_outbox_items: number;
+}
+
+export interface DailyClosureRecord {
+  id: number;
+  fecha_corte: string;
+  cerrado_en: string;
+  nota: string;
+  movimientos_dia: number;
+  total_cargos_dia: number;
+  total_abonos_dia: number;
+  abonos_efectivo: number;
+  abonos_qr: number;
+  abonos_transferencia: number;
+  abonos_tarjeta: number;
+  abonos_otro: number;
+  saldo_cartera_total: number;
+  cuentas_activas: number;
+  sincronizado_drive: boolean;
+  pos_restore_path: string;
+  cuentas_restore_path: string;
+  reporte_path: string;
+  receipt_text?: string;
+  drive_uploaded_count?: number;
+  drive_message?: string;
 }
 
 export interface BackupManifest {

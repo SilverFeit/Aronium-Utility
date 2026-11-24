@@ -203,9 +203,9 @@ func RunCompleteUninstall(installDir, dataDir, explicitAccountsDB string) (*Unin
 		// Delete HKCU / HKLM ARONIUM_* environment variables and Run keys
 		envVars := []string{
 			"ARONIUM_UTIL_HOME", "ARONIUM_UTIL_CONFIG", "ARONIUM_POS_DB",
-			"ARONIUM_STATE_DB", "ARONIUM_ACCOUNTS_DB", "ARONIUM_STORE_ID",
-			"ARONIUM_REGISTER_ID", "ARONIUM_CLI_BIN", "ARONIUM_UI_BIN",
-			"ARONIUM_POS_DB_PASSWORD", "ARONIUM_TIMEZONE",
+			"ARONIUM_LOCAL_POS_COPY", "ARONIUM_STATE_DB", "ARONIUM_ACCOUNTS_DB",
+			"ARONIUM_STORE_ID", "ARONIUM_REGISTER_ID", "ARONIUM_CLI_BIN",
+			"ARONIUM_UI_BIN", "ARONIUM_POS_DB_PASSWORD", "ARONIUM_TIMEZONE",
 		}
 		for _, k := range envVars {
 			for _, root := range []string{`HKCU\Environment`, `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`} {

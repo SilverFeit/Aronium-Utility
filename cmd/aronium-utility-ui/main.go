@@ -25,7 +25,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/updater"
 )
 
-const AppVersion = "2.0.2"
+const AppVersion = "2.0.3"
 
 //go:embed all:dist
 var embeddedFrontend embed.FS
@@ -77,7 +77,7 @@ func main() {
 	portFlag := flag.Int("port", 0, "Local IPC & WebView port (0 = ephemeral)")
 	headlessFlag := flag.Bool("headless", false, "Do not launch desktop WebView window automatically")
 	trayOnlyFlag := flag.Bool("tray-only", false, "Start minimized in Windows System Tray without opening the UI window")
-	ensureWatchFlag := flag.Bool("ensure-watch", true, "Ensure background aronium-util watch daemon is running")
+	ensureWatchFlag := flag.Bool("ensure-watch", false, "Legacy live watcher disabled by default so Aronium pos.db is never locked")
 	flag.Parse()
 
 	shouldOpenInitially := !*headlessFlag && !*trayOnlyFlag
@@ -96,7 +96,8 @@ func main() {
 		svcMgr.BinaryPath = cliBin
 	}
 
-	// Ensure background live transaction watcher is running invisibly when UI starts
+	// Ensure any legacy background watch service/task that could touch live pos.db is stopped,
+	// and refresh our isolated LocalAppData copy (pos_local_copy.db) once at startup.
 	var (
 		procMu      sync.Mutex
 		watchCmd    *exec.Cmd
@@ -105,7 +106,20 @@ func main() {
 		latestTag   string
 	)
 
-	if *ensureWatchFlag && cliBin != "" {
+	if !*ensureWatchFlag && cliBin != "" {
+		go func() {
+			_, _ = svcMgr.Stop()
+			syncCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			syncCmd := exec.CommandContext(syncCtx, cliBin, "config", "sync-pos-copy", "--json")
+			service.HideChildWindow(syncCmd)
+			if out, sErr := syncCmd.CombinedOutput(); sErr != nil {
+				config.AppendDebugLog("UI-STARTUP-COPY", "config sync-pos-copy", "WARN", 0, strings.TrimSpace(string(out)))
+			} else {
+				config.AppendDebugLog("UI-STARTUP-COPY", "config sync-pos-copy", "OK", 0, "pos_local_copy.db sincronizada al iniciar")
+			}
+		}()
+	} else if *ensureWatchFlag && cliBin != "" {
 		watchCmd = exec.Command(cliBin, "watch")
 		service.HideChildWindow(watchCmd)
 		if err := watchCmd.Start(); err != nil {

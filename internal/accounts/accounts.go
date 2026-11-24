@@ -366,6 +366,26 @@ func migrateAccountsConn(conn *sql.DB, accountsDBPath string) (*SchemaMigrationR
 
 	if hasAccountKey {
 		for _, idxStmt := range []string{
+			`CREATE TABLE IF NOT EXISTS cierres_caja (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				fecha_corte TEXT NOT NULL,
+				cerrado_en TEXT NOT NULL,
+				nota TEXT NOT NULL DEFAULT '',
+				movimientos_dia INTEGER NOT NULL DEFAULT 0,
+				total_cargos_dia INTEGER NOT NULL DEFAULT 0,
+				total_abonos_dia INTEGER NOT NULL DEFAULT 0,
+				abonos_efectivo INTEGER NOT NULL DEFAULT 0,
+				abonos_qr INTEGER NOT NULL DEFAULT 0,
+				abonos_transferencia INTEGER NOT NULL DEFAULT 0,
+				abonos_tarjeta INTEGER NOT NULL DEFAULT 0,
+				abonos_otro INTEGER NOT NULL DEFAULT 0,
+				saldo_cartera_total INTEGER NOT NULL DEFAULT 0,
+				cuentas_activas INTEGER NOT NULL DEFAULT 0,
+				sincronizado_drive INTEGER NOT NULL DEFAULT 0,
+				pos_restore_path TEXT NOT NULL DEFAULT '',
+				cuentas_restore_path TEXT NOT NULL DEFAULT '',
+				reporte_path TEXT NOT NULL DEFAULT ''
+			);`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_cuentas_id_nombre ON cuentas(LOWER(id), LOWER(nombre));`,
 			`CREATE INDEX IF NOT EXISTS idx_cuentas_id ON cuentas(LOWER(id));`,
 			`CREATE INDEX IF NOT EXISTS idx_movimientos_cuenta ON movimientos(cuenta_id);`,
@@ -700,6 +720,26 @@ func v3DDLStatements() []string {
 			subtotal INTEGER NOT NULL
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cuentas_id_nombre ON cuentas(LOWER(id), LOWER(nombre));`,
+		`CREATE TABLE IF NOT EXISTS cierres_caja (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			fecha_corte TEXT NOT NULL,
+			cerrado_en TEXT NOT NULL,
+			nota TEXT NOT NULL DEFAULT '',
+			movimientos_dia INTEGER NOT NULL DEFAULT 0,
+			total_cargos_dia INTEGER NOT NULL DEFAULT 0,
+			total_abonos_dia INTEGER NOT NULL DEFAULT 0,
+			abonos_efectivo INTEGER NOT NULL DEFAULT 0,
+			abonos_qr INTEGER NOT NULL DEFAULT 0,
+			abonos_transferencia INTEGER NOT NULL DEFAULT 0,
+			abonos_tarjeta INTEGER NOT NULL DEFAULT 0,
+			abonos_otro INTEGER NOT NULL DEFAULT 0,
+			saldo_cartera_total INTEGER NOT NULL DEFAULT 0,
+			cuentas_activas INTEGER NOT NULL DEFAULT 0,
+			sincronizado_drive INTEGER NOT NULL DEFAULT 0,
+			pos_restore_path TEXT NOT NULL DEFAULT '',
+			cuentas_restore_path TEXT NOT NULL DEFAULT '',
+			reporte_path TEXT NOT NULL DEFAULT ''
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_cuentas_id ON cuentas(LOWER(id));`,
 		`CREATE INDEX IF NOT EXISTS idx_movimientos_cuenta ON movimientos(cuenta_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_movitems_mov ON movimiento_items(movimiento_id);`,
@@ -1443,4 +1483,259 @@ func GenerateStatement(acc AccountSummary, storeName string) string {
 	}
 	sb.WriteString("====================================================\n")
 	return sb.String()
+}
+
+// DailyCloseRequest configures closing the daily cash box of customer accounts.
+type DailyCloseRequest struct {
+	Date              string `json:"fecha_corte"`
+	Note              string `json:"nota"`
+	StoreName         string `json:"store_name"`
+	PosLocalCopyPath  string `json:"pos_local_copy_path"`
+	BackupDir         string `json:"backup_dir"`
+	ReportsDir        string `json:"reports_dir"`
+	DocumentsDir      string `json:"documents_dir"`
+	SyncDrive         bool   `json:"sync_drive"`
+}
+
+// DailyClosureRecord mirrors a saved closing record in `cierres_caja`.
+type DailyClosureRecord struct {
+	ID                   int64  `json:"id"`
+	Date                 string `json:"fecha_corte"`
+	ClosedAt             string `json:"cerrado_en"`
+	Note                 string `json:"nota"`
+	MovementsCount       int    `json:"movimientos_dia"`
+	TotalChargesDay      int64  `json:"total_cargos_dia"`
+	TotalPaymentsDay     int64  `json:"total_abonos_dia"`
+	PaymentsCash         int64  `json:"abonos_efectivo"`
+	PaymentsQR           int64  `json:"abonos_qr"`
+	PaymentsTransfer     int64  `json:"abonos_transferencia"`
+	PaymentsCard         int64  `json:"abonos_tarjeta"`
+	PaymentsOther        int64  `json:"abonos_otro"`
+	TotalPortfolioSaldo  int64  `json:"saldo_cartera_total"`
+	ActiveAccountsCount  int    `json:"cuentas_activas"`
+	SyncedToDrive        bool   `json:"sincronizado_drive"`
+	PosRestorePath       string `json:"pos_restore_path"`
+	CuentasRestorePath   string `json:"cuentas_restore_path"`
+	ReportPath           string `json:"reporte_path"`
+	ReceiptText          string `json:"receipt_text,omitempty"`
+	DriveUploadedCount   int    `json:"drive_uploaded_count,omitempty"`
+	DriveMessage         string `json:"drive_message,omitempty"`
+}
+
+// CloseDailyAccountsBox totals all charges and payments for the target day, generates a 2-DB restore point
+// (pos_local_copy.db + cuentas.db), saves a text closing receipt, and records the closure in cierres_caja.
+func (m *Manager) CloseDailyAccountsBox(ctx context.Context, req DailyCloseRequest) (*DailyClosureRecord, error) {
+	cutDate := strings.TrimSpace(req.Date)
+	if cutDate == "" {
+		cutDate = LocalNow().Format("2006-01-02")
+	}
+	closedAt := LocalTimestampNow()
+	storeName := strings.TrimSpace(req.StoreName)
+	if storeName == "" {
+		storeName = "Mi Comercio Aronium"
+	}
+
+	ledger, err := m.ListAccounts("")
+	if err != nil {
+		return nil, err
+	}
+
+	rec := &DailyClosureRecord{
+		Date:                cutDate,
+		ClosedAt:            closedAt,
+		Note:                strings.TrimSpace(req.Note),
+		TotalPortfolioSaldo: ledger.TotalPendingBalance,
+		ActiveAccountsCount: ledger.ActiveAccountsCount,
+	}
+
+	rows, err := m.DB.Query(`
+		SELECT tipo, monto, COALESCE(metodo_pago_usado, ''), COALESCE(CAST(fecha AS TEXT), '')
+		FROM movimientos
+		WHERE substr(COALESCE(CAST(fecha AS TEXT), ''), 1, 10) = ?;
+	`, cutDate)
+	if err != nil {
+		return nil, fmt.Errorf("error consultando movimientos del día %s: %w", cutDate, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var tipo, metodo, fecha string
+		var monto int64
+		if err := rows.Scan(&tipo, &monto, &metodo, &fecha); err != nil {
+			continue
+		}
+		rec.MovementsCount++
+		switch strings.ToUpper(strings.TrimSpace(tipo)) {
+		case "CARGO":
+			rec.TotalChargesDay += monto
+		case "ABONO":
+			rec.TotalPaymentsDay += monto
+			mLow := strings.ToLower(strings.TrimSpace(metodo))
+			switch {
+			case strings.Contains(mLow, "qr"):
+				rec.PaymentsQR += monto
+			case strings.Contains(mLow, "trans") || strings.Contains(mLow, "nequi") || strings.Contains(mLow, "davi"):
+				rec.PaymentsTransfer += monto
+			case strings.Contains(mLow, "tarj") || strings.Contains(mLow, "dataf"):
+				rec.PaymentsCard += monto
+			case strings.Contains(mLow, "efec") || mLow == "":
+				rec.PaymentsCash += monto
+			default:
+				rec.PaymentsOther += monto
+			}
+		}
+	}
+
+	// Build 2-DB Restore Points (pos_local_copy.db + cuentas.db)
+	backupBase := strings.TrimSpace(req.BackupDir)
+	if backupBase == "" {
+		backupBase = filepath.Join(filepath.Dir(m.DBPath), "backups")
+	}
+	restoreDir := filepath.Join(backupBase, "puntos_restauracion")
+	_ = os.MkdirAll(restoreDir, 0755)
+	tsTag := LocalNow().Format("20060102_150405")
+
+	cuentasRestore := filepath.Join(restoreDir, fmt.Sprintf("cuentas_restore_%s.db", tsTag))
+	if err := m.OnlineBackupAccountsDB(ctx, cuentasRestore); err == nil {
+		rec.CuentasRestorePath = cuentasRestore
+		_ = os.WriteFile(filepath.Join(backupBase, "cuentas_restore_point.db"), mustReadOrNil(cuentasRestore), 0644)
+	}
+
+	posSrc := strings.TrimSpace(req.PosLocalCopyPath)
+	if posSrc != "" {
+		if posRaw, rErr := os.ReadFile(posSrc); rErr == nil && len(posRaw) > 0 {
+			posRestore := filepath.Join(restoreDir, fmt.Sprintf("pos_local_copy_restore_%s.db", tsTag))
+			if wErr := os.WriteFile(posRestore, posRaw, 0644); wErr == nil {
+				rec.PosRestorePath = posRestore
+				_ = os.WriteFile(filepath.Join(backupBase, "pos_restore_point.db"), posRaw, 0644)
+			}
+		}
+	}
+
+	if docsDir := strings.TrimSpace(req.DocumentsDir); docsDir != "" {
+		_ = os.MkdirAll(docsDir, 0755)
+		if rec.CuentasRestorePath != "" {
+			if raw := mustReadOrNil(rec.CuentasRestorePath); len(raw) > 0 {
+				_ = os.WriteFile(filepath.Join(docsDir, "cuentas.db"), raw, 0644)
+			}
+		}
+		if rec.PosRestorePath != "" {
+			if raw := mustReadOrNil(rec.PosRestorePath); len(raw) > 0 {
+				_ = os.WriteFile(filepath.Join(docsDir, "pos_local_copy.db"), raw, 0644)
+			}
+		}
+	}
+
+	receipt := GenerateDailyClosureReceipt(storeName, rec)
+	rec.ReceiptText = receipt
+
+	reportsDir := strings.TrimSpace(req.ReportsDir)
+	if reportsDir == "" {
+		reportsDir = filepath.Join(backupBase, "cierres")
+	}
+	_ = os.MkdirAll(reportsDir, 0755)
+	reportFile := filepath.Join(reportsDir, fmt.Sprintf("Cierre_Caja_Cuentas_%s_%s.txt", cutDate, tsTag))
+	if wErr := os.WriteFile(reportFile, []byte(receipt), 0644); wErr == nil {
+		rec.ReportPath = reportFile
+	}
+
+	insRes, err := m.DB.Exec(`
+		INSERT INTO cierres_caja
+			(fecha_corte, cerrado_en, nota, movimientos_dia, total_cargos_dia, total_abonos_dia,
+			 abonos_efectivo, abonos_qr, abonos_transferencia, abonos_tarjeta, abonos_otro,
+			 saldo_cartera_total, cuentas_activas, sincronizado_drive, pos_restore_path, cuentas_restore_path, reporte_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?);
+	`,
+		rec.Date, rec.ClosedAt, rec.Note, rec.MovementsCount, rec.TotalChargesDay, rec.TotalPaymentsDay,
+		rec.PaymentsCash, rec.PaymentsQR, rec.PaymentsTransfer, rec.PaymentsCard, rec.PaymentsOther,
+		rec.TotalPortfolioSaldo, rec.ActiveAccountsCount, rec.PosRestorePath, rec.CuentasRestorePath, rec.ReportPath,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error guardando cierre en cuentas.db: %w", err)
+	}
+	rec.ID, _ = insRes.LastInsertId()
+	return rec, nil
+}
+
+// MarkClosureDriveSynced updates sincronizado_drive = 1 for a saved closure record.
+func (m *Manager) MarkClosureDriveSynced(closureID int64) error {
+	if closureID <= 0 {
+		return nil
+	}
+	_, err := m.DB.Exec(`UPDATE cierres_caja SET sincronizado_drive = 1 WHERE id = ?;`, closureID)
+	return err
+}
+
+// ListDailyClosures returns the most recent cash-box closures stored in cuentas.db.
+func (m *Manager) ListDailyClosures(limit int) ([]DailyClosureRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := m.DB.Query(`
+		SELECT id, fecha_corte, cerrado_en, nota, movimientos_dia, total_cargos_dia, total_abonos_dia,
+		       abonos_efectivo, abonos_qr, abonos_transferencia, abonos_tarjeta, abonos_otro,
+		       saldo_cartera_total, cuentas_activas, sincronizado_drive, pos_restore_path, cuentas_restore_path, reporte_path
+		FROM cierres_caja
+		ORDER BY id DESC
+		LIMIT ?;
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []DailyClosureRecord
+	for rows.Next() {
+		var r DailyClosureRecord
+		var syncInt int
+		if err := rows.Scan(
+			&r.ID, &r.Date, &r.ClosedAt, &r.Note, &r.MovementsCount, &r.TotalChargesDay, &r.TotalPaymentsDay,
+			&r.PaymentsCash, &r.PaymentsQR, &r.PaymentsTransfer, &r.PaymentsCard, &r.PaymentsOther,
+			&r.TotalPortfolioSaldo, &r.ActiveAccountsCount, &syncInt, &r.PosRestorePath, &r.CuentasRestorePath, &r.ReportPath,
+		); err == nil {
+			r.SyncedToDrive = syncInt != 0
+			list = append(list, r)
+		}
+	}
+	return list, nil
+}
+
+// GenerateDailyClosureReceipt formats a printable receipt for daily customer accounts cash-box closure.
+func GenerateDailyClosureReceipt(storeName string, r *DailyClosureRecord) string {
+	var sb strings.Builder
+	sb.WriteString("========================================================\n")
+	sb.WriteString("   CIERRE DIARIO DE CAJA DE CUENTAS (ARONIUM UTILITY)\n")
+	sb.WriteString(fmt.Sprintf("   Comercio:    %s\n", storeName))
+	sb.WriteString(fmt.Sprintf("   Fecha Corte: %s\n", r.Date))
+	sb.WriteString(fmt.Sprintf("   Cerrado En:  %s\n", r.ClosedAt))
+	sb.WriteString("========================================================\n")
+	sb.WriteString(fmt.Sprintf("Movimientos del día:       %d\n", r.MovementsCount))
+	sb.WriteString(fmt.Sprintf("Total Cargos / Fiados:     $%d\n", r.TotalChargesDay))
+	sb.WriteString(fmt.Sprintf("Total Abonos / Pagos Rec.: $%d\n", r.TotalPaymentsDay))
+	sb.WriteString("  Desglose de Recaudo del Día:\n")
+	sb.WriteString(fmt.Sprintf("    • Efectivo:            $%d\n", r.PaymentsCash))
+	sb.WriteString(fmt.Sprintf("    • QR:                  $%d\n", r.PaymentsQR))
+	sb.WriteString(fmt.Sprintf("    • Transferencia:       $%d\n", r.PaymentsTransfer))
+	sb.WriteString(fmt.Sprintf("    • Tarjeta:             $%d\n", r.PaymentsCard))
+	sb.WriteString(fmt.Sprintf("    • Otro:                $%d\n", r.PaymentsOther))
+	sb.WriteString("--------------------------------------------------------\n")
+	sb.WriteString(fmt.Sprintf("Cuentas Activas con Saldo: %d\n", r.ActiveAccountsCount))
+	sb.WriteString(fmt.Sprintf("CARTERA TOTAL PENDIENTE:   $%d\n", r.TotalPortfolioSaldo))
+	if r.Note != "" {
+		sb.WriteString(fmt.Sprintf("Nota de Cierre:            %s\n", r.Note))
+	}
+	sb.WriteString("--------------------------------------------------------\n")
+	sb.WriteString("PUNTOS DE RESTAURACIÓN GENERADOS (2 .DB):\n")
+	if r.CuentasRestorePath != "" {
+		sb.WriteString(fmt.Sprintf("  • cuentas.db:        %s\n", r.CuentasRestorePath))
+	}
+	if r.PosRestorePath != "" {
+		sb.WriteString(fmt.Sprintf("  • pos_local_copy.db: %s\n", r.PosRestorePath))
+	}
+	sb.WriteString("========================================================\n")
+	return sb.String()
+}
+
+func mustReadOrNil(p string) []byte {
+	b, _ := os.ReadFile(p)
+	return b
 }

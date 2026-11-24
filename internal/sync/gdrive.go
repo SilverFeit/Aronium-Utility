@@ -29,6 +29,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/credit"
 	"github.com/SilverFeit/Aronium-Utility/internal/db"
 	"github.com/SilverFeit/Aronium-Utility/internal/inventory"
+	"github.com/SilverFeit/Aronium-Utility/internal/service"
 )
 
 const (
@@ -53,15 +54,17 @@ type OAuthToken struct {
 
 // SyncResult reports the artifacts written and uploaded during a Google Drive / Sheets sync cycle.
 type SyncResult struct {
-	Timestamp          time.Time         `json:"timestamp"`
-	MasterWorkbookPath string            `json:"master_workbook_path"`
-	AccountsBackupPath string            `json:"accounts_backup_path,omitempty"`
-	CustomerFiles      []string          `json:"customer_files"`
-	InventoryFiles     []string          `json:"inventory_files"`
-	UploadedDriveIDs   map[string]string `json:"uploaded_drive_ids,omitempty"`
-	UpdatedSheetID     string            `json:"updated_sheet_id,omitempty"`
-	QueuedOffline      bool              `json:"queued_offline"`
-	FlushedOutboxItems int               `json:"flushed_outbox_items"`
+	Timestamp           time.Time         `json:"timestamp"`
+	MasterWorkbookPath  string            `json:"master_workbook_path"`
+	AccountsBackupPath  string            `json:"accounts_backup_path,omitempty"`
+	PosRestorePointPath string            `json:"pos_restore_point_path,omitempty"`
+	TwoDBRestorePoints  []string          `json:"two_db_restore_points,omitempty"`
+	CustomerFiles       []string          `json:"customer_files"`
+	InventoryFiles      []string          `json:"inventory_files"`
+	UploadedDriveIDs    map[string]string `json:"uploaded_drive_ids,omitempty"`
+	UpdatedSheetID      string            `json:"updated_sheet_id,omitempty"`
+	QueuedOffline       bool              `json:"queued_offline"`
+	FlushedOutboxItems  int               `json:"flushed_outbox_items"`
 }
 
 // DriveManager coordinates Web OAuth 2.0 authentication, atomic local Drive files, Drive API v3, and Sheets API v4.
@@ -661,17 +664,65 @@ func (m *DriveManager) SyncAll(ctx context.Context) (*SyncResult, error) {
 		Content:     masterBytes,
 	})
 
-	// 4. Hot Online Backup of cuentas.db via SQLite VACUUM INTO (TODO-106)
+	// 4. Restore-Point Backup of BOTH .db files (cuentas.db + pos_local_copy.db) for Drive & Local Restore Points
+	backupsBDDir := filepath.Join(syncRoot, "Backups_BD")
+	_ = os.MkdirAll(backupsBDDir, 0755)
+	docsDir := service.DocumentsBackupDir()
+	_ = os.MkdirAll(docsDir, 0755)
+	localBackupDir := m.Cfg.Backup.BackupDir
+	if strings.TrimSpace(localBackupDir) == "" {
+		localBackupDir = filepath.Join(config.DefaultAppDataDir(), "backups")
+	}
+	_ = os.MkdirAll(localBackupDir, 0755)
+
 	if accMgr != nil {
 		backupDBPath := filepath.Join(creditDir, "cuentas_backup.db")
 		if err := accMgr.OnlineBackupAccountsDB(ctx, backupDBPath); err == nil {
 			res.AccountsBackupPath = backupDBPath
 			if dbBytes, err := os.ReadFile(backupDBPath); err == nil {
+				restoreCuentasPath := filepath.Join(backupsBDDir, "cuentas_backup.db")
+				_ = WriteAtomicFile(restoreCuentasPath, dbBytes)
+				_ = WriteAtomicFile(filepath.Join(localBackupDir, "cuentas_restore_point.db"), dbBytes)
+				_ = WriteAtomicFile(filepath.Join(docsDir, "cuentas.db"), dbBytes)
+				res.TwoDBRestorePoints = append(res.TwoDBRestorePoints, restoreCuentasPath)
+				uploads = append(uploads,
+					uploadTarget{
+						LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/cuentas_backup.db", m.Cfg.GoogleDrive.RootFolderName),
+						LocalPath:   backupDBPath,
+						MimeType:    "application/x-sqlite3",
+						Content:     dbBytes,
+					},
+					uploadTarget{
+						LogicalPath: fmt.Sprintf("/%s/Backups_BD/cuentas_backup.db", m.Cfg.GoogleDrive.RootFolderName),
+						LocalPath:   restoreCuentasPath,
+						MimeType:    "application/x-sqlite3",
+						Content:     dbBytes,
+					},
+				)
+			}
+		}
+	}
+
+	posSrcCandidate := strings.TrimSpace(m.Cfg.LocalPosCopyPath)
+	if posSrcCandidate == "" {
+		posSrcCandidate = db.LocalPosDBCopyPath()
+	}
+	if _, stErr := os.Stat(posSrcCandidate); stErr != nil {
+		posSrcCandidate = m.Cfg.PosDBPath
+	}
+	if posSrcCandidate != "" {
+		if posBytes, pErr := os.ReadFile(posSrcCandidate); pErr == nil && len(posBytes) > 0 {
+			restorePosPath := filepath.Join(backupsBDDir, "pos_backup.db")
+			if err := WriteAtomicFile(restorePosPath, posBytes); err == nil {
+				res.PosRestorePointPath = restorePosPath
+				_ = WriteAtomicFile(filepath.Join(localBackupDir, "pos_restore_point.db"), posBytes)
+				_ = WriteAtomicFile(filepath.Join(docsDir, "pos_local_copy.db"), posBytes)
+				res.TwoDBRestorePoints = append(res.TwoDBRestorePoints, restorePosPath)
 				uploads = append(uploads, uploadTarget{
-					LogicalPath: fmt.Sprintf("/%s/Cuentas_Credito/cuentas_backup.db", m.Cfg.GoogleDrive.RootFolderName),
-					LocalPath:   backupDBPath,
+					LogicalPath: fmt.Sprintf("/%s/Backups_BD/pos_backup.db", m.Cfg.GoogleDrive.RootFolderName),
+					LocalPath:   restorePosPath,
 					MimeType:    "application/x-sqlite3",
-					Content:     dbBytes,
+					Content:     posBytes,
 				})
 			}
 		}

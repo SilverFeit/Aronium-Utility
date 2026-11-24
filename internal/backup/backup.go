@@ -52,7 +52,11 @@ func (m *Manager) Create(ctx context.Context, passphrase string) (*BackupManifes
 		return nil, err
 	}
 
-	posConn, err := db.OpenPosDBForOnlineBackup(m.Cfg.PosDBPath)
+	workingPosPath := m.Cfg.PosDBPath
+	if cpRes, cpErr := db.SyncPosDBToLocalCopy(m.Cfg.PosDBPath, m.Cfg.LocalPosCopyPath, true); cpErr == nil && cpRes != nil && cpRes.LocalCopyPath != "" {
+		workingPosPath = cpRes.LocalCopyPath
+	}
+	posConn, err := db.OpenPosDBForOnlineBackup(workingPosPath)
 	if err != nil {
 		return nil, err
 	}

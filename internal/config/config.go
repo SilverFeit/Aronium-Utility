@@ -37,6 +37,7 @@ type Config struct {
 	CashRegisterID   string          `yaml:"cash_register_id" json:"cash_register_id"`
 	CashRegisterName string          `yaml:"cash_register_name" json:"cash_register_name"`
 	PosDBPath        string          `yaml:"pos_db_path" json:"pos_db_path"`
+	LocalPosCopyPath string          `yaml:"local_pos_copy_path,omitempty" json:"local_pos_copy_path"`
 	PosDBPassword    string          `yaml:"pos_db_password,omitempty" json:"pos_db_password,omitempty"`
 	AccountsDBPath   string          `yaml:"accounts_db_path" json:"accounts_db_path"`
 	StateDBPath      string          `yaml:"state_db_path" json:"state_db_path"`
@@ -216,6 +217,7 @@ func DefaultConfig() *Config {
 		CashRegisterID:   "POS-01",
 		CashRegisterName: fmt.Sprintf("Caja Principal (%s)", hostname),
 		PosDBPath:        DetectAroniumPosDB(),
+		LocalPosCopyPath: filepath.Join(appDir, "pos_local_copy.db"),
 		AccountsDBPath:   filepath.Join(appDir, "cuentas.db"),
 		StateDBPath:      filepath.Join(appDir, "aronium_utility_state.db"),
 		Timezone:         "Local",
@@ -326,6 +328,9 @@ func Load(path string) (*Config, error) {
 		cfg.UI.ScalePercent = 125
 	}
 	cfg.UI.Theme = NormalizeUITheme(cfg.UI.Theme)
+	if strings.TrimSpace(cfg.LocalPosCopyPath) == "" {
+		cfg.LocalPosCopyPath = filepath.Join(DefaultAppDataDir(), "pos_local_copy.db")
+	}
 	if strings.TrimSpace(cfg.Timezone) == "" {
 		cfg.Timezone = "Local"
 	} else if !strings.EqualFold(cfg.Timezone, "Local") && os.Getenv("ARONIUM_TIMEZONE") == "" {
@@ -376,6 +381,9 @@ func VerifyPIN(candidatePin, expectedHash string) bool {
 func (c *Config) ApplyEnvOverrides() {
 	if v := os.Getenv("ARONIUM_POS_DB"); v != "" {
 		c.PosDBPath = v
+	}
+	if v := os.Getenv("ARONIUM_LOCAL_POS_COPY"); v != "" {
+		c.LocalPosCopyPath = v
 	}
 	if v := os.Getenv("ARONIUM_ACCOUNTS_DB"); v != "" {
 		c.AccountsDBPath = v

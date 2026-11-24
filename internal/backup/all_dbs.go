@@ -129,6 +129,17 @@ func (m *Manager) CreateAllDatabasesSnapshot(ctx context.Context, cfgPath string
 		UploadedDriveIDs: make(map[string]string),
 	}
 
+	// Refresh isolated pos_local_copy.db via pure OS byte copy first so Aronium Lite is never locked
+	posSrcForBackup := m.Cfg.LocalPosCopyPath
+	if cpRes, cpErr := db.SyncPosDBToLocalCopy(m.Cfg.PosDBPath, m.Cfg.LocalPosCopyPath, true); cpErr == nil && cpRes != nil {
+		posSrcForBackup = cpRes.LocalCopyPath
+	} else if strings.TrimSpace(posSrcForBackup) == "" {
+		posSrcForBackup = db.LocalPosDBCopyPath()
+	}
+	if _, stErr := os.Stat(posSrcForBackup); stErr != nil {
+		posSrcForBackup = m.Cfg.PosDBPath
+	}
+
 	type sourceTarget struct {
 		Name     string
 		Src      string
@@ -137,7 +148,7 @@ func (m *Manager) CreateAllDatabasesSnapshot(ctx context.Context, cfgPath string
 		MimeType string
 	}
 	targets := []sourceTarget{
-		{Name: "pos.db", Src: m.Cfg.PosDBPath, SQLite: true, Key: os.Getenv("ARONIUM_POS_DB_PASSWORD"), MimeType: "application/x-sqlite3"},
+		{Name: "pos.db", Src: posSrcForBackup, SQLite: true, Key: os.Getenv("ARONIUM_POS_DB_PASSWORD"), MimeType: "application/x-sqlite3"},
 		{Name: "cuentas.db", Src: m.Cfg.AccountsDBPath, SQLite: true, MimeType: "application/x-sqlite3"},
 		{Name: "aronium_utility_state.db", Src: m.Cfg.StateDBPath, SQLite: true, MimeType: "application/x-sqlite3"},
 	}

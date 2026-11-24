@@ -13,7 +13,7 @@ import (
 	"github.com/SilverFeit/Aronium-Utility/internal/service"
 )
 
-const UninstallerVersion = "2.0.2"
+const UninstallerVersion = "2.0.3"
 
 func main() {
 	installDirFlag := flag.String("install-dir", "", "Carpeta de instalación (%LOCALAPPDATA%\\Programs\\AroniumUtility)")

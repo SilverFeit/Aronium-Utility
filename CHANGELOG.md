@@ -2,6 +2,20 @@
 
 All notable changes to **Aronium Utility** are documented in this file.
 
+## [2.0.3] — 2026-11-24
+
+### Added & Fixed (Zero Live Aronium Contact + Isolated Local Copy + Daily Cash Box Close)
+- **Strict Isolated Local Copy Architecture (`pos_local_copy.db` — Zero Aronium Lite Locks Guaranteed):**
+  - Never opens SQLite connections directly against Aronium Lite's production `%LOCALAPPDATA%\Aronium\Data\pos.db` during runtime.
+  - Instead, `internal/db.SyncPosDBToLocalCopy` creates an isolated OS-level byte copy (`%LOCALAPPDATA%\AroniumUtility\pos_local_copy.db`, consolidating `-wal` pages only inside our temp copy) during installation (`aronium-util-setup`), at Windows/app startup (`config sync-pos-copy`), or when manually refreshing products / syncing Drive.
+  - Disabled the legacy background `watch` polling loop by default (`--ensure-watch=false`) and stops `AroniumUtilityService` / scheduled watcher tasks so Aronium Lite can close/delete orders immediately with zero lock contention.
+- **2-DB Restore Point Backups on Manual Sync & Closing (`internal/sync/gdrive.go`, `internal/accounts/accounts.go`):**
+  - Manual Google Drive sync and daily box closing automatically save a 2-database restore point (`pos_local_copy.db` + `cuentas.db`) inside `backups/`, `Mis Documentos\AroniumUtility_Respaldo_Cuentas\`, and Google Drive (`/Backups_BD/pos_backup.db` + `cuentas_backup.db`).
+- **Daily Accounts Cash-Box Closure (`accounts close-day`, `cierres_caja`, UI Card):**
+  - Added **`🔒 Cerrar Caja Diaria de Cuentas`** with total daily charges/payments, payment-method breakdown (Efectivo / QR / Transferencia / Tarjeta / Otro), persistent `cierres_caja` history, text closing receipt, 2-DB restore points, and a toggleable **`Sincronizar con Google Drive`** checkbox (100% local if unchecked or if Drive is unlinked).
+
+---
+
 ## [2.0.2] — 2026-11-24
 
 ### Added & Fixed

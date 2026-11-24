@@ -45,6 +45,7 @@ import (
 func setupTestEnv(t *testing.T) (*config.Config, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
+	t.Setenv("ARONIUM_UTIL_HOME", tmpDir)
 	posDBPath := filepath.Join(tmpDir, "pos.db")
 	stateDBPath := filepath.Join(tmpDir, "aronium_utility_state.db")
 
@@ -57,6 +58,8 @@ func setupTestEnv(t *testing.T) (*config.Config, string) {
 	cfg.StoreName = "Minimercado Central"
 	cfg.CashRegisterID = "POS-01"
 	cfg.PosDBPath = posDBPath
+	cfg.LocalPosCopyPath = filepath.Join(tmpDir, "pos_local_copy.db")
+	cfg.AccountsDBPath = filepath.Join(tmpDir, "cuentas.db")
 	cfg.StateDBPath = stateDBPath
 	cfg.GoogleDrive.TokenVaultPath = filepath.Join(tmpDir, "gdrive.token.enc")
 	cfg.GoogleDrive.LocalDriveSyncDir = filepath.Join(tmpDir, "GoogleDriveSync")
@@ -1650,5 +1653,125 @@ func TestBDD_V202_BulkListDocuments_AllDBsBackup_UninstallerDocumentsCopy_And_De
 	dbgAfter, _ := config.ReadDebugLogs(8192)
 	if !strings.Contains(dbgAfter, "limpiado") {
 		t.Fatalf("expected cleared marker in debug.log, got %q", dbgAfter)
+	}
+}
+
+func TestBDD_V203_IsolatedPosDBLocalCopy_ZeroLiveLock_DailyBoxClose_And_TwoDBRestorePoint(t *testing.T) {
+	cfg, tmpDir := setupTestEnv(t)
+	t.Setenv("ARONIUM_UTIL_HOME", tmpDir)
+	docsDir := filepath.Join(tmpDir, "DocsBackup203")
+	t.Setenv("ARONIUM_DOCS_BACKUP_DIR", docsDir)
+
+	localCopyDest := filepath.Join(tmpDir, "pos_local_copy.db")
+	cfg.LocalPosCopyPath = localCopyDest
+
+	// 1. Copy Aronium's pos.db -> pos_local_copy.db via pure OS byte copy (zero SQLite lock on original)
+	cpRes, err := db.SyncPosDBToLocalCopy(cfg.PosDBPath, localCopyDest, true)
+	if err != nil {
+		t.Fatalf("SyncPosDBToLocalCopy: %v", err)
+	}
+	if cpRes.LocalCopyPath != localCopyDest || cpRes.SizeBytes <= 0 {
+		t.Fatalf("unexpected PosCopyResult: %+v", cpRes)
+	}
+
+	// Verify EnsureWorkingPosDBCopy returns existing localCopyDest WITHOUT touching original pos.db even if origin is temporarily missing
+	missingOrigin := filepath.Join(tmpDir, "nonexistent_aronium_dir", "pos.db")
+	resolved, err := db.EnsureWorkingPosDBCopy(missingOrigin, localCopyDest)
+	if err != nil || resolved != localCopyDest {
+		t.Fatalf("expected EnsureWorkingPosDBCopy to reuse isolated copy cleanly, got resolved=%q err=%v", resolved, err)
+	}
+
+	// Verify isolated copy is 100% queryable for catalog & inventory
+	isoConn, err := db.OpenPosDBReadOnly(resolved)
+	if err != nil {
+		t.Fatalf("OpenPosDBReadOnly on isolated copy: %v", err)
+	}
+	prods, err := db.ListProductsWithStock(isoConn)
+	_ = isoConn.Close()
+	if err != nil || len(prods) == 0 {
+		t.Fatalf("expected products from isolated pos_local_copy.db, got %d (err=%v)", len(prods), err)
+	}
+
+	// 2. Daily Accounts Cash-Box Closure + 2-DB Restore Point + Drive sync toggle
+	mgr, err := accounts.NewManager(cfg.AccountsDBPath)
+	if err != nil {
+		t.Fatalf("accounts.NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	_, err = mgr.CreateOrUpdateAccountWithItems(accounts.CreateAccountRequest{
+		IDPrefix:            "Torre",
+		IDNumber:            "110",
+		Name:                "Cliente Cierre Caja",
+		PaymentMethod:       "QR",
+		CreditLimit:         200000,
+		InitialChargeAmount: 45000,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := mgr.RecordMovement(accounts.MovementRequest{
+		AccountID:     "Torre-110",
+		CustomerName:  "Cliente Cierre Caja",
+		Type:          accounts.MovementPayment,
+		Amount:        20000,
+		PaymentMethod: "QR",
+		Note:          "Abono del día",
+	}); err != nil {
+		t.Fatalf("record payment: %v", err)
+	}
+
+	closure, err := mgr.CloseDailyAccountsBox(context.Background(), accounts.DailyCloseRequest{
+		Note:             "Cierre de prueba v2.0.3",
+		StoreName:        cfg.StoreName,
+		PosLocalCopyPath: localCopyDest,
+		BackupDir:        cfg.Backup.BackupDir,
+		ReportsDir:       filepath.Join(cfg.GoogleDrive.LocalDriveSyncDir, "AroniumUtility", "Reportes"),
+		DocumentsDir:     docsDir,
+		SyncDrive:        false,
+	})
+	if err != nil {
+		t.Fatalf("CloseDailyAccountsBox: %v", err)
+	}
+	if closure.TotalChargesDay != 45000 || closure.TotalPaymentsDay != 20000 || closure.PaymentsQR != 20000 || closure.TotalPortfolioSaldo != 25000 {
+		t.Fatalf("unexpected daily closure totals: %+v", closure)
+	}
+	if _, err := os.Stat(closure.PosRestorePath); err != nil {
+		t.Fatalf("expected pos_local_copy restore point at %s: %v", closure.PosRestorePath, err)
+	}
+	if _, err := os.Stat(closure.CuentasRestorePath); err != nil {
+		t.Fatalf("expected cuentas.db restore point at %s: %v", closure.CuentasRestorePath, err)
+	}
+	if _, err := os.Stat(filepath.Join(docsDir, "pos_local_copy.db")); err != nil {
+		t.Fatalf("expected Documents pos_local_copy.db copy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(docsDir, "cuentas.db")); err != nil {
+		t.Fatalf("expected Documents cuentas.db copy: %v", err)
+	}
+
+	closures, err := mgr.ListDailyClosures(10)
+	if err != nil || len(closures) == 0 {
+		t.Fatalf("expected persisted closure in cierres_caja, got len=%d err=%v", len(closures), err)
+	}
+
+	// 3. Verify DriveManager.SyncAll saves BOTH pos_backup.db & cuentas_backup.db as 2-DB restore points
+	stateConn, err := db.OpenStateDB(cfg.StateDBPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer stateConn.Close()
+	isoConn2, err := db.OpenPosDBReadOnly(localCopyDest)
+	if err != nil {
+		t.Fatalf("OpenPosDBReadOnly 2: %v", err)
+	}
+	defer isoConn2.Close()
+
+	drvMgr := gosync.NewDriveManager(cfg, isoConn2, stateConn)
+	syncRes, err := drvMgr.SyncAll(context.Background())
+	if err != nil {
+		t.Fatalf("SyncAll: %v", err)
+	}
+	if len(syncRes.TwoDBRestorePoints) < 2 || syncRes.PosRestorePointPath == "" || syncRes.AccountsBackupPath == "" {
+		t.Fatalf("expected both DB restore points in SyncResult, got %+v", syncRes)
 	}
 }

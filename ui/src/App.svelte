@@ -11,6 +11,7 @@
     ConfigInfoResponse,
     CustomerAccount,
     DailyClosingReport,
+    DailyClosureRecord,
     DashboardSnapshot,
     DebugLogsPayload,
     DoctorReport,
@@ -36,6 +37,12 @@
   let recordingPayment = $state(false);
   let syncingDrive = $state(false);
   let backingUpAllDBs = $state(false);
+  let syncingPosCopy = $state(false);
+  let closingBox = $state(false);
+  let syncDriveOnClose = $state(false);
+  let closeBoxNote = $state('');
+  let lastDailyClosure = $state<DailyClosureRecord | null>(null);
+  let recentClosures = $state<DailyClosureRecord[]>([]);
   let loadingLogs = $state(false);
   let cliPingResult = $state('');
   let debugLogs = $state<DebugLogsPayload | null>(null);
@@ -284,6 +291,11 @@
         void searchCatalog(scannerQuery);
         void (async () => {
           try {
+            recentClosures = (await runAroniumCLI<DailyClosureRecord[]>(['accounts', 'closures', '--limit', '10', '--json'])) || [];
+          } catch {
+            recentClosures = [];
+          }
+          try {
             snapshot = await runAroniumCLI<DashboardSnapshot>(['admin', '--json']);
           } catch {
             snapshot = null;
@@ -298,6 +310,11 @@
         snapshot = null;
         dailyReport = null;
         catalogMatches = [];
+        try {
+          recentClosures = (await runAroniumCLI<DailyClosureRecord[]>(['accounts', 'closures', '--limit', '10', '--json'])) || [];
+        } catch {
+          recentClosures = [];
+        }
       }
     } catch (e: any) {
       showToast(`Error comunicando con aronium-util: ${e?.message || e}`, true);
@@ -773,6 +790,52 @@
       showToast(`Error respaldando bases de datos (.db): ${e?.message || e}`, true);
     } finally {
       backingUpAllDBs = false;
+    }
+  }
+
+  async function handleSyncPosCopy() {
+    syncingPosCopy = true;
+    try {
+      const res = await runAroniumCLI<{
+        synced: boolean;
+        local_copy: string;
+        size_bytes: number;
+        product_count: number;
+        copied_at: string;
+      }>(['config', 'sync-pos-copy', '--json']);
+      await refreshAll();
+      showToast(
+        `✓ Copia local actualizada (${res.product_count} productos desde ${res.local_copy}) — Aronium Lite sigue 100% libre.`
+      );
+    } catch (e: any) {
+      showToast(`Error actualizando copia local de Aronium: ${e?.message || e}`, true);
+    } finally {
+      syncingPosCopy = false;
+    }
+  }
+
+  async function handleCloseDailyBox() {
+    closingBox = true;
+    try {
+      const shouldSync = Boolean(syncDriveOnClose && driveStatus?.connected);
+      const args = [
+        'accounts',
+        'close-day',
+        shouldSync ? '--sync-drive=true' : '--sync-drive=false',
+      ];
+      if (closeBoxNote.trim()) {
+        args.push('--note', closeBoxNote.trim());
+      }
+      args.push('--json');
+      const rec = await runAroniumCLI<DailyClosureRecord>(args);
+      lastDailyClosure = rec;
+      closeBoxNote = '';
+      await refreshAll();
+      showToast(rec.drive_message || 'Cierre diario de caja de cuentas y punto de restauración de 2 .db completados.');
+    } catch (e: any) {
+      showToast(`Error cerrando caja diaria de cuentas: ${e?.message || e}`, true);
+    } finally {
+      closingBox = false;
     }
   }
 
@@ -1472,7 +1535,8 @@
               </div>
             </label>
             <div style="margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg-primary); border: 1px solid var(--border); font-size: 12.5px;">
-              <strong>Productos leídos de Aronium:</strong> {doctor?.pos_db_product_count ?? 0} producto(s)<br />
+              <strong>Modo de Lectura:</strong> Copia Local Aislada (<code>{configInfo?.local_pos_copy_path || 'pos_local_copy.db'}</code>)<br />
+              <strong>Productos en Copia Local:</strong> {doctor?.pos_db_product_count ?? 0} producto(s)<br />
               <strong>Cuentas activas/registradas:</strong> {doctor?.accounts_count ?? accountsReport?.total_cuentas ?? 0}
             </div>
           </div>
@@ -1480,6 +1544,9 @@
         <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
           <button class="btn btn-green" disabled={loading} onclick={() => handleSaveDatabasePaths(false, false)}>
             Guardar y Conectar Bases de Datos
+          </button>
+          <button class="btn btn-outline" disabled={syncingPosCopy} onclick={handleSyncPosCopy}>
+            {syncingPosCopy ? 'Copiando pos.db...' : '🔄 Actualizar Copia de Aronium (pos.db -> Copia Local)'}
           </button>
           <button class="btn" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
             {backingUpAllDBs ? 'Respaldando todas las .db...' : '☁️ Respaldar Todas las Bases (.db) a Drive'}
@@ -2112,8 +2179,65 @@
           </div>
         {/if}
 
-        {#if selectedStatement}
-          <div class="card">
+          <div class="card" style="border-color: var(--accent-blue); margin-bottom: 16px;">
+            <div class="card-title">
+              <span>🔒 Cerrar Caja Diaria de Cuentas (Punto de Restauración de 2 .db)</span>
+              <span class={driveStatus?.connected ? 'badge badge-ok' : 'badge badge-warn'}>
+                {driveStatus?.connected ? 'Drive Habilitado' : 'Solo Local'}
+              </span>
+            </div>
+            <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
+              Calcula el total recaudado del día en <strong>Efectivo / QR / Transferencia</strong>, genera un punto de restauración automático de las <strong>2 bases de datos</strong> (<code>pos_local_copy.db</code> y <code>cuentas.db</code>) y guarda el comprobante de cierre.
+            </p>
+            <div class="form-grid" style="margin-bottom: 10px;">
+              <label class="field-label">
+                Nota de Cierre (Opcional)
+                <input class="input" bind:value={closeBoxNote} placeholder="Ej. Cierre turno noche / Cuadre diario" />
+              </label>
+            </div>
+            <label
+              style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; cursor: pointer;"
+            >
+              <input
+                type="checkbox"
+                bind:checked={syncDriveOnClose}
+                disabled={!driveStatus?.connected}
+              />
+              <span>
+                <strong>Sincronizar con Google Drive al cerrar la caja</strong>
+                {#if !driveStatus?.connected}
+                  <span style="color: var(--text-muted); font-size: 11.5px;"> (Drive no vinculado: todo el cierre se hará 100% en local)</span>
+                {:else}
+                  <span style="color: var(--text-muted); font-size: 11.5px;"> (Desmarcado = todo el cierre y backup de 2 .db queda 100% en local)</span>
+                {/if}
+              </span>
+            </label>
+            <button
+              class="btn btn-green"
+              style="width: 100%;"
+              disabled={closingBox}
+              onclick={handleCloseDailyBox}
+            >
+              {closingBox
+                ? 'Cerrando Caja Diaria y Guardando 2 .db...'
+                : syncDriveOnClose && driveStatus?.connected
+                  ? '🔒 Cerrar Caja Diaria de Cuentas + Sincronizar con Drive'
+                  : '🔒 Cerrar Caja Diaria de Cuentas (100% Local + 2 .db)'}
+            </button>
+            {#if lastDailyClosure}
+              <div style="margin-top: 12px;">
+                <div style="font-size: 12.5px; color: var(--accent-green); font-weight: 700; margin-bottom: 6px;">
+                  ✓ {lastDailyClosure.drive_message}
+                </div>
+                {#if lastDailyClosure.receipt_text}
+                  <pre class="stmt-box" style="max-height: 240px;">{lastDailyClosure.receipt_text}</pre>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          {#if selectedStatement}
+            <div class="card">
             <div class="card-title">
               <span>Recibo / Estado de Cuenta: {selectedStatementCustomer}</span>
               <button class="btn btn-outline" onclick={() => (selectedStatement = '')}>Cerrar</button>
@@ -2249,6 +2373,46 @@
             {/each}
           {/if}
         </div>
+
+        {#if recentClosures.length > 0}
+          <div class="card">
+            <div class="card-title">
+              <span>Historial de Cierres Diarios de Caja de Cuentas</span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fecha / Hora</th>
+                    <th>Cargos Día</th>
+                    <th>Abonos Recaudados</th>
+                    <th>Desglose (Efec / QR / Transf)</th>
+                    <th>Cartera Total</th>
+                    <th>Drive</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each recentClosures as c}
+                    <tr>
+                      <td><code>{c.cerrado_en}</code></td>
+                      <td>${c.total_cargos_dia.toLocaleString()}</td>
+                      <td><strong>${c.total_abonos_dia.toLocaleString()}</strong></td>
+                      <td style="font-size: 12px;">
+                        Efec: ${c.abonos_efectivo.toLocaleString()} · QR: ${c.abonos_qr.toLocaleString()} · Transf: ${c.abonos_transferencia.toLocaleString()}
+                      </td>
+                      <td>${c.saldo_cartera_total.toLocaleString()}</td>
+                      <td>
+                        <span class={c.sincronizado_drive ? 'badge badge-ok' : 'badge badge-warn'}>
+                          {c.sincronizado_drive ? '✓ Drive + 2 .db' : 'Local + 2 .db'}
+                        </span>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {/if}
       {/if}
 
       <!-- BASIC TAB 3: NET INVENTORY (STOCK ARONIUM - UNIDADES EN CUENTAS) -->
@@ -2360,6 +2524,11 @@
             {#if lastSyncResult}
               <div style="margin-top: 14px; font-size: 12.5px; color: var(--accent-green);">
                 ✓ Archivo actualizado: <code>{lastSyncResult.master_workbook_path}</code>
+                {#if lastSyncResult.two_db_restore_points?.length}
+                  <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+                    ✓ Punto de restauración de las 2 .db guardado: <code>{lastSyncResult.two_db_restore_points.join(' | ')}</code>
+                  </div>
+                {/if}
               </div>
             {/if}
             {#if lastAllDBsBackup}
@@ -2370,14 +2539,42 @@
           </div>
 
           <div class="card">
-            <div class="card-title">Elegir Bases de Datos (Aronium y Cuentas)</div>
+            <div class="card-title">Base de Datos Aislada & Cierre Diario de Caja</div>
             <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-              <strong>Productos de Aronium:</strong> <code>{configInfo?.config?.pos_db_path}</code><br />
+              <strong>Origen Aronium (Solo copia al arranque/manual):</strong> <code>{configInfo?.config?.pos_db_path}</code><br />
+              <strong>Copia Local Aislada en Uso:</strong> <code>{configInfo?.local_pos_copy_path || 'pos_local_copy.db'}</code><br />
               <strong>Base de Cuentas:</strong> <code>{configInfo?.config?.accounts_db_path}</code>
             </p>
-            <button class="btn btn-outline" onclick={() => (showDbModal = true)}>
-              Cambiar Ubicación de Bases de Datos
-            </button>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+              <button class="btn" disabled={syncingPosCopy} onclick={handleSyncPosCopy}>
+                {syncingPosCopy ? 'Copiando...' : '🔄 Actualizar Copia Local desde Aronium'}
+              </button>
+              <button class="btn btn-outline" onclick={() => (showDbModal = true)}>
+                Cambiar Ubicación de Bases de Datos
+              </button>
+            </div>
+
+            <div style="padding-top: 12px; border-top: 1px solid var(--border);">
+              <div style="font-size: 13.5px; font-weight: 700; color: var(--accent-blue); margin-bottom: 6px;">
+                🔒 Cierre Diario de Caja de Cuentas (Backup de las 2 .db)
+              </div>
+              <label
+                style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12.5px; cursor: pointer;"
+              >
+                <input
+                  type="checkbox"
+                  bind:checked={syncDriveOnClose}
+                  disabled={!driveStatus?.connected}
+                />
+                <span>
+                  Sincronizar cierre diario con Google Drive
+                  {#if !driveStatus?.connected}(Drive no conectado — se guardará en local){/if}
+                </span>
+              </label>
+              <button class="btn btn-green" style="width: 100%;" disabled={closingBox} onclick={handleCloseDailyBox}>
+                {closingBox ? 'Cerrando Caja Diaria...' : '🔒 Cerrar Caja Diaria de Cuentas Ahora'}
+              </button>
+            </div>
           </div>
         </div>
       {/if}
@@ -2789,13 +2986,18 @@
               </div>
             </div>
             <div class="card">
-              <h3 class="card-title">Respaldo Explícito de Todas las Bases (.db) a Drive y PC</h3>
+              <h3 class="card-title">Punto de Restauración (2 .db) + Respaldo Completo a Drive</h3>
               <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 0;">
-                Toma copia consistente en caliente de <code>pos.db</code> (Aronium), <code>cuentas.db</code>, <code>aronium_utility_state.db</code> y <code>aronium-util.yaml</code>, guarda un <code>.zip</code> en PC + copia en Mis Documentos y lo sube directo a la carpeta <code>/Backups_BD</code> de Google Drive.
+                Al sincronizar manualmente o cerrar la caja diaria se guarda copia de restauración de las <strong>2 bases de datos</strong> (<code>pos_local_copy.db</code> y <code>cuentas.db</code>). También puedes generar un respaldo completo inmediato:
               </p>
-              <button class="btn btn-amber" style="width: 100%; margin-bottom: 12px;" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
-                {backingUpAllDBs ? 'Respaldando y Subiendo .db a Drive...' : '☁️ Respaldar Todas las Bases (.db) en Drive Ahora'}
-              </button>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+                <button class="btn btn-amber" style="flex: 1;" disabled={backingUpAllDBs} onclick={handleBackupAllDBsToDrive}>
+                  {backingUpAllDBs ? 'Respaldando y Subiendo .db a Drive...' : '☁️ Respaldar Todas las Bases (.db) en Drive Ahora'}
+                </button>
+                <button class="btn" disabled={syncingPosCopy} onclick={handleSyncPosCopy}>
+                  {syncingPosCopy ? 'Copiando...' : '🔄 Refrescar Copia Local'}
+                </button>
+              </div>
               {#if lastAllDBsBackup}
                 <div style="font-size: 12px; padding: 10px; border-radius: 8px; background: var(--bg-primary); border: 1px solid var(--border); margin-bottom: 12px;">
                   <strong>{lastAllDBsBackup.message}</strong><br />
